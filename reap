@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""reap, Claude Code chat manager: view and delete local chats.
+
+A chat = its transcript + sidecar dir + agents-view job record. reap deletes
+all three together, so a chat is gone from /resume AND the agents view.
+
+Usage:
+  reap [<name|path>]       list chats for the current (or named) project
+  reap --all               list every project, grouped by workspace
+  reap rm <id>... [opts]   delete by uuid prefix (for scripts)   opts below
+  reap --help              this help
+
+  reap rm options:  --apply  actually delete (default is a dry-run)
+                   --orphans  remove leftover sidecar dirs (no transcript)
+                   -p <name>  target another project (default: current dir)
+
+"""
+import json, os, sys, glob, time, shutil
+
+__version__ = "0.1.0"
+
+HOME = os.path.expanduser("~")
+PROJ = os.path.join(HOME, ".claude", "projects")
+
+def resolve_dir(arg):
+    if not arg:
+        return os.path.join(PROJ, os.path.abspath(os.getcwd()).replace("/", "-"))
+    if os.path.isdir(arg):
+        ap = os.path.abspath(arg)
+        return ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, ap.replace("/", "-"))
+    cands = sorted(d for d in glob.glob(os.path.join(PROJ, "*"))
+                   if os.path.isdir(d) and arg in os.path.basename(d))
+    if len(cands) == 1: return cands[0]
+    if not cands: sys.exit(f"no project folder matches '{arg}'")
+    sys.exit("ambiguous '%s':\n  %s" % (arg, "\n  ".join(os.path.basename(c) for c in cands)))
+
+def pretty(DIR):
+    name = os.path.basename(DIR)
+    prefix = "-" + HOME.strip("/").replace("/", "-")   # e.g. -home-alice
+    if name.startswith(prefix): name = name[len(prefix):]
+    return name.lstrip("-") or os.path.basename(DIR)
+
+def live_session_ids():
+    ids = set()
+    for p in glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json")):
+        try: ids.add(json.load(open(p)).get("sessionId"))
+        except Exception: pass
+    try:
+        r = json.load(open(os.path.join(HOME, ".claude", "daemon", "roster.json")))
+        for w in r.get("workers", {}).values(): ids.add(w.get("sessionId"))
+    except Exception: pass
+    return {i for i in ids if i}
+
+def dirsize(p):
+    t = 0
+    for root, _, files in os.walk(p):
+        for f in files:
+            try: t += os.path.getsize(os.path.join(root, f))
+            except OSError: pass
+    return t
+
+def human(n):
+    n = float(n)
+    for u in ("B", "K", "M", "G"):
+        if n < 1024:
+            return f"{n:.1f}{u}" if (u in "MG" and n < 10) else f"{n:.0f}{u}"
+        n /= 1024
+    return f"{n:.0f}T"
+
+def reltime(mt, now):
+    d = max(0, now - mt)
+    if d < 3600: return f"{int(d // 60)}m"
+    if d < 86400: return f"{int(d // 3600)}h"
+    if d < 86400 * 30: return f"{int(d // 86400)}d"
+    return f"{int(d // (86400 * 30))}mo"
+
+def meta(path):
+    # Only title (custom-title/agent-name) and the first user prompt are needed,
+    # and they live in the header. json.loads is the launch hotspot, so cheaply
+    # reject lines that can't carry either before parsing: title/prompt/count
+    # stay byte-identical to a full parse.
+    title = prompt = None
+    n = 0
+    try:
+        with open(path) as fh:
+            for line in fh:
+                n += 1
+                is_title = '"custom-title"' in line or '"agent-name"' in line
+                if not is_title and (prompt is not None or '"type":"user"' not in line):
+                    continue
+                try: o = json.loads(line)
+                except Exception: continue
+                t = o.get("type")
+                if t == "custom-title" and o.get("customTitle"): title = o["customTitle"]
+                elif t == "agent-name" and o.get("agentName") and not title: title = o["agentName"]
+                elif prompt is None and t == "user" and not o.get("isMeta"):
+                    c = o.get("message", {}).get("content")
+                    if isinstance(c, list):
+                        c = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+                    if isinstance(c, str):
+                        c = c.strip()
+                        if c and not c.startswith(("<local-command", "<command-", "Caveat:")):
+                            prompt = " ".join(c.split())
+    except OSError: pass
+    return title, prompt, n
+
+def load_chats(DIR):
+    live = live_session_ids()
+    now = time.time()
+    proj = pretty(DIR)
+    chats = []
+    for jp in glob.glob(os.path.join(DIR, "*.jsonl")):
+        uuid = os.path.basename(jp)[:-6]
+        sd = os.path.join(DIR, uuid)
+        title, prompt, n = meta(jp)
+        mt = os.path.getmtime(jp)
+        chats.append({
+            "uuid": uuid, "short": uuid.split("-")[0], "dir": DIR, "proj": proj, "path": jp,
+            "label": title or prompt or "(empty)",
+            "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
+            "mt": mt, "rel": reltime(mt, now), "live": uuid in live,
+        })
+    chats.sort(key=lambda c: c["mt"], reverse=True)
+    return chats
+
+def load_all():
+    chats = []
+    for d in sorted(glob.glob(os.path.join(PROJ, "*"))):
+        if os.path.isdir(d): chats += load_chats(d)
+    recent = {}
+    for c in chats:
+        recent[c["proj"]] = max(recent.get(c["proj"], 0), c["mt"])
+    chats.sort(key=lambda c: (-recent[c["proj"]], c["proj"], -c["mt"]))  # group by folder, recent first
+    return chats
+
+def delete_chat(DIR, uuid):
+    for p in (os.path.join(DIR, uuid + ".jsonl"),
+              os.path.join(DIR, uuid),
+              os.path.join(HOME, ".claude", "jobs", uuid.split("-")[0])):
+        if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
+        elif os.path.exists(p): os.remove(p)
+
+def print_static(chats, grouped=False):
+    last = None
+    for c in chats:
+        if grouped and c["proj"] != last:
+            last = c["proj"]; print(f"\n# {c['proj']}")
+        live = "  * live" if c["live"] else ""
+        print(f"  {c['rel']:>4} {human(c['size']):>6} {c['msgs']:>5}  {c['label'][:44]:44} {c['short']}{live}")
+    print(f"\n{len(chats)} chats - {human(sum(c['size'] for c in chats))} total")
+
+def print_help():
+    on = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    def c(s, code): return f"\033[{code}m{s}\033[0m" if on else s
+    B = lambda s: c(s, "1"); D = lambda s: c(s, "2")
+    CMD = lambda s: c(s, "36"); HEAD = lambda s: c(s, "1;4")        # cyan / bold-underline
+
+    print(f"{B('reap')} {D(': Claude Code chat manager')}")
+    print(D("view and delete your local Claude Code chats"))
+    print()
+    print(D("a chat = transcript + sidecar dir + agents-view job record;"))
+    print(D("reap removes all three, so it's gone from /resume and the agents view."))
+    print()
+    print(HEAD("usage"))
+    usage = [
+        ("reap [<name|path>]", "list chats, current project, or name = folder substring"),
+        ("reap --all", "list all projects, grouped by workspace"),
+        ("reap rm <id>... [opts]", "delete by uuid prefix (for scripts)"),
+        ("reap --help", "this help"),
+        ("reap --version", "print version"),
+    ]
+    w = max(len(a) for a, _ in usage)
+    for a, b in usage:
+        print(f"  {CMD(a.ljust(w))}  {b}")
+    print()
+    print(f"  {D('rm options')}")
+    for a, b in [("--apply", "actually delete (default is a dry-run)"),
+                 ("--orphans", "remove leftover sidecar dirs (no transcript)"),
+                 ("-p <name>", "target another project (default: current dir)")]:
+        print(f"    {CMD(a.ljust(11))}  {b}")
+    print()
+    print(D("rm is a dry-run unless --apply; live sessions are protected."))
+
+def pop_flag(lst, flag):
+    if flag in lst: lst.remove(flag); return True
+    return False
+
+def pop_opt(lst, opt):
+    if opt in lst:
+        i = lst.index(opt)
+        val = lst[i + 1] if i + 1 < len(lst) else None
+        del lst[i:i + 2]
+        return val
+    return None
+
+def cmd_ls(args):
+    args = list(args)
+    if pop_flag(args, "--all"):
+        print_static(load_all(), grouped=True)
+    else:
+        proj = next((a for a in args if not a.startswith("-")), None)
+        DIR = resolve_dir(proj)
+        if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
+        print_static(load_chats(DIR), grouped=False)
+
+def cmd_rm(args):
+    args = list(args)
+    apply = pop_flag(args, "--apply")
+    orphans = pop_flag(args, "--orphans")
+    proj = pop_opt(args, "-p")
+    DIR = resolve_dir(proj)                              # None -> current project
+    if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
+    plan = []                                            # (uuid_or_None, path_or_None)
+    if orphans:
+        jsonls = {os.path.basename(p)[:-6] for p in glob.glob(os.path.join(DIR, "*.jsonl"))}
+        for d in glob.glob(os.path.join(DIR, "*/")):
+            b = os.path.basename(d.rstrip("/"))
+            if b == "memory" or b in jsonls: continue
+            plan.append((None, d.rstrip("/")))
+    else:
+        ids = [a for a in args if not a.startswith("-")]
+        if not ids: sys.exit("usage: reap rm <id-prefix>... [--apply] [--orphans] [-p <project>]")
+        live = live_session_ids()
+        for tok in ids:
+            hits = [os.path.basename(p)[:-6] for p in glob.glob(os.path.join(DIR, "*.jsonl"))
+                    if os.path.basename(p).startswith(tok)]
+            if not hits: print(f"!! no chat matches '{tok}'"); continue
+            if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {hits}"); continue
+            if hits[0] in live: print(f"!! SKIP {hits[0]}, session is live"); continue
+            plan.append((hits[0], None))
+    if not plan:
+        print("nothing to do"); return
+    for uuid, path in plan:
+        what = f"orphan dir {os.path.basename(path)}" if path else f"{uuid} (transcript + sidecar + job)"
+        print(("DELETE " if apply else "would delete ") + what)
+    if apply:
+        for uuid, path in plan:
+            if path: shutil.rmtree(path, ignore_errors=True)
+            else: delete_chat(DIR, uuid)
+        print("done.")
+    else:
+        print("dry-run, add --apply to delete")
+
+def main():
+    argv = sys.argv[1:]
+    if "--version" in argv or "-V" in argv:
+        print(f"reap {__version__}"); return
+    if "-h" in argv or "--help" in argv:
+        print_help(); return
+    sub = argv[0] if argv and not argv[0].startswith("-") else None
+    if sub == "ls": return cmd_ls(argv[1:])
+    if sub == "rm": return cmd_rm(argv[1:])
+
+    cmd_ls(argv)
+
+if __name__ == "__main__":
+    main()
