@@ -5,8 +5,10 @@ A chat = its transcript + sidecar dir + agents-view job record. reap deletes
 all three together, so a chat is gone from /resume AND the agents view.
 
 Usage:
-  reap [<name|path>]       list chats for the current (or named) project
-  reap --all               list every project, grouped by workspace
+  reap                     interactive picker for the current project
+  reap <name|path>         picker for a project (name = folder substring)
+  reap --all               picker across every project, grouped by workspace
+  reap ls [<name>|--all]   print a plain list (no UI; pipe-friendly)
   reap rm <id>... [opts]   delete by uuid prefix (for scripts)   opts below
   reap --help              this help
 
@@ -14,13 +16,39 @@ Usage:
                    --orphans  remove leftover sidecar dirs (no transcript)
                    -p <name>  target another project (default: current dir)
 
+Picker keys (press ? inside for this list):
+  up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
+  space pick (skips live)   a select-all (filtered)   c clear
+  d / enter delete selected (asks to confirm)
+  s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
 """
 import json, os, sys, glob, time, shutil
+from collections import Counter
 
 __version__ = "0.1.0"
 
 HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
+
+HELP_LINES = [
+    ("", "reap : Claude Code chat manager"),
+    ("", ""),
+    ("H", "move"),
+    ("", "  up/down or j/k   line          PgUp/PgDn  page"),
+    ("", "  g / G            top / bottom   [ / ]      prev / next workspace"),
+    ("", ""),
+    ("H", "select & act"),
+    ("", "  space            toggle pick (skips live sessions)"),
+    ("", "  a / c            select-all (filtered) / clear"),
+    ("", "  d or enter       delete selected (lists them, asks y/N)"),
+    ("", ""),
+    ("H", "view"),
+    ("", "  s                sort: recency <-> size"),
+    ("", "  /                filter by title / uuid / workspace"),
+    ("", "  q                quit"),
+    ("", ""),
+    ("", "deleting removes transcript + sidecar dir + job record together."),
+]
 
 def resolve_dir(arg):
     if not arg:
@@ -140,6 +168,46 @@ def delete_chat(DIR, uuid):
         if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
         elif os.path.exists(p): os.remove(p)
 
+def role(label):
+    l = label.lower()
+    if l.startswith("stale"): return "stale"
+    for r in ("planner", "worker", "reviewer", "thinker"):
+        if r in l: return r
+    return "other"
+
+def projlabel(p, wdt):
+    return p if len(p) <= wdt else "…" + p[-(wdt - 1):]
+
+def fit(s, width):
+    if width <= 0: return ""
+    return s if len(s) <= width else s[:max(0, width - 1)] + "…"
+
+def order(chats, mode, grouped):
+    """Recency keeps loader order; size sorts big-first (within each group when grouped)."""
+    if mode != "size": return chats
+    if grouped:
+        tot = {}
+        for c in chats: tot[c["proj"]] = tot.get(c["proj"], 0) + c["size"]
+        return sorted(chats, key=lambda c: (-tot[c["proj"]], c["proj"], -c["size"]))
+    return sorted(chats, key=lambda c: -c["size"])
+
+def plan_view(items, cur, top, avail, grouped):
+    """Scroll math + sticky header. Returns (top, pinned_hdr_idx_or_None, body_rows)."""
+    if not items: return 0, None, avail
+    cur = max(0, min(cur, len(items) - 1))
+    top = min(top, cur)
+    if cur >= top + avail: top = cur - avail + 1
+    top = max(0, top)
+    gh = None
+    if grouped:
+        for i in range(cur, -1, -1):
+            if items[i][0] == "hdr": gh = i; break
+    if gh is not None and gh < top:                       # real header scrolled off -> pin it
+        body = max(1, avail - 1)
+        if cur >= top + body: top = cur - body + 1
+        return max(0, top), gh, body
+    return top, None, avail
+
 def print_static(chats, grouped=False):
     last = None
     for c in chats:
@@ -148,6 +216,209 @@ def print_static(chats, grouped=False):
         live = "  * live" if c["live"] else ""
         print(f"  {c['rel']:>4} {human(c['size']):>6} {c['msgs']:>5}  {c['label'][:44]:44} {c['short']}{live}")
     print(f"\n{len(chats)} chats - {human(sum(c['size'] for c in chats))} total")
+
+def selftest(chats, where):
+    print(f"loaded {len(chats)} chats from {where}")
+    print("roles   :", dict(Counter(role(c["label"]) for c in chats)))
+    print("live    :", [c["short"] for c in chats if c["live"]] or "none")
+    print("projects:", dict(Counter(c["proj"] for c in chats)))
+    print_static(chats[:6], grouped=True)
+
+def run_ui(loader, title, grouped):
+    import curses, locale
+    locale.setlocale(locale.LC_ALL, "")
+
+    def main(stdscr):
+        curses.curs_set(0)
+        curses.use_default_colors()
+        COL = {}
+        for i, (k, v) in enumerate({"planner": curses.COLOR_CYAN, "worker": curses.COLOR_GREEN,
+                                    "reviewer": curses.COLOR_YELLOW, "thinker": curses.COLOR_MAGENTA}.items(), 1):
+            try:
+                curses.init_pair(i, v, -1); COL[k] = curses.color_pair(i)
+            except Exception:
+                COL[k] = 0
+        SEL = curses.A_REVERSE | curses.A_BOLD          # theme-adaptive, always high-contrast
+        DIM = curses.A_DIM
+        HDR = curses.A_BOLD | curses.A_UNDERLINE
+
+        chats = loader()
+        by = {c["uuid"]: c for c in chats}
+        picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, "", "recency"
+
+        def add(y, x, s, attr=0):
+            h, w = stdscr.getmaxyx()
+            if not (0 <= y < h) or x < 0: return
+            try: stdscr.addstr(y, x, s[:max(0, w - 1 - x)], attr)
+            except curses.error: pass
+
+        def do_help():
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            add(0, 1, "reap · keys", curses.A_BOLD)
+            for j, (tag, s) in enumerate(HELP_LINES):
+                add(2 + j, 1, s, curses.A_BOLD if tag == "H" else 0)
+            add(h - 1, 1, " any key to close", DIM)
+            stdscr.refresh(); stdscr.getch()
+
+        def confirm_delete(sel):
+            sel = sorted(sel, key=lambda c: -c["size"])
+            freed = human(sum(c["size"] for c in sel))
+            h, w = stdscr.getmaxyx()
+            shown = min(len(sel), 10, max(1, h - 6))
+            y0 = h - 3 - shown
+            add(y0, 0, f" delete {len(sel)} chats ({freed})?".ljust(w - 1), curses.A_REVERSE)
+            for j in range(shown):
+                c = sel[j]
+                add(y0 + 1 + j, 0, f"   {human(c['size']):>6}  {fit(c['label'], w - 13)}".ljust(w - 1), curses.A_REVERSE)
+            if len(sel) > shown:
+                add(y0 + 1 + shown, 0, f"   … +{len(sel) - shown} more".ljust(w - 1), curses.A_REVERSE)
+            add(h - 1, 0, " y = delete  -  any other key = cancel".ljust(w - 1), curses.A_REVERSE)
+            stdscr.refresh()
+            return stdscr.getch() in (ord("y"), ord("Y"))
+
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            ordered = order(chats, sort_mode, grouped)
+            f = flt.lower()
+            vis = ordered if not flt else [c for c in ordered
+                                           if f in c["label"].lower() or f in c["uuid"] or f in c["proj"].lower()]
+
+            items = []                                   # gap + header + chat rows
+            if grouped:
+                stat = {}
+                for c in vis:
+                    s = stat.setdefault(c["proj"], [0, 0]); s[0] += 1; s[1] += c["size"]
+                last = None
+                for c in vis:
+                    if c["proj"] != last:
+                        if last is not None: items.append(("gap",))   # blank line between sections
+                        last = c["proj"]; items.append(("hdr", c["proj"], stat[c["proj"]]))
+                    items.append(("chat", c))
+            else:
+                items = [("chat", c) for c in vis]
+
+            ci = [i for i, it in enumerate(items) if it[0] == "chat"]
+            if not ci:
+                cur = 0
+            elif cur >= len(items) or items[cur][0] != "chat":
+                later = [i for i in ci if i >= cur]
+                cur = later[0] if later else ci[-1]
+
+            top, pin, body = plan_view(items, cur, top, max(1, h - 4), grouped)
+
+            total = sum(c["size"] for c in chats)
+            psz = sum(by[u]["size"] for u in picked if u in by)
+            t = projlabel(title, w - 28)
+            stag = "  · by size" if sort_mode == "size" else ""
+            add(0, 1, "reap", curses.A_BOLD)
+            add(0, 5, t, DIM)
+            add(0, max(1, w - 26 - len(stag)), f"{len(chats)} chats - {human(total)}{stag}", DIM)
+
+            def draw_hdr(y, it):
+                add(y, 0, f" ▌ {projlabel(it[1], w - 24)}   {it[2][0]} chats · {human(it[2][1])}".ljust(w - 1), HDR)
+
+            if not vis:
+                add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
+            base = 2
+            if pin is not None:
+                draw_hdr(base, items[pin]); base += 1
+            for k in range(body):
+                idx = top + k
+                if idx >= len(items): break
+                it = items[idx]; y = base + k
+                if it[0] == "gap":
+                    continue
+                if it[0] == "hdr":
+                    draw_hdr(y, it); continue
+                c = it[1]
+                box = "[x]" if c["uuid"] in picked else "[ ]"
+                ind = "  " if grouped else ""
+                live = "  * live" if c["live"] else ""
+                if idx == cur:
+                    pre = f" {ind}{box} {c['rel']:>3} {human(c['size']):>6}  "
+                    lbl = fit(c["label"], max(0, w - 1 - len(pre) - len(live)))
+                    add(y, 0, (pre + lbl + live).ljust(w - 1), SEL)
+                    continue
+                pre = f" {ind}{box} "
+                add(y, 0, pre); x = len(pre)
+                seg = f"{c['rel']:>3} {human(c['size']):>6}  "
+                add(y, x, seg, DIM); x += len(seg)
+                r = role(c["label"])
+                tattr = curses.A_BOLD if c["live"] else DIM if r == "stale" else COL.get(r, 0)
+                lbl = fit(c["label"], max(0, w - 1 - x - len(live)))
+                add(y, x, lbl, tattr); x += len(lbl)
+                if c["live"]: add(y, x, "  * live", curses.A_BOLD)
+
+            add(h - 2, 0, "-" * (w - 1), DIM)
+            if filtering:
+                add(h - 1, 0, f" /{flt}", curses.A_BOLD)
+            elif msg:
+                add(h - 1, 0, " " + msg, curses.A_BOLD)
+            else:
+                add(h - 1, 0, " ? keys · space pick · d delete · / filter · q quit", DIM)
+                if picked:
+                    add(h - 1, max(1, w - 26), f"{len(picked)} picked - {human(psz)} free", curses.A_BOLD)
+            stdscr.refresh()
+
+            ch = stdscr.getch()
+            msg = ""
+            if filtering:
+                if ch in (10, 13): filtering = False
+                elif ch == 27: filtering = False; flt = ""
+                elif ch in (curses.KEY_BACKSPACE, 127, 8): flt = flt[:-1]
+                elif 32 <= ch < 127: flt += chr(ch)
+                cur = top = 0
+                continue
+
+            pos = ci.index(cur) if cur in ci else 0
+            if ch in (ord("q"), 27): break
+            elif ch == ord("?"): do_help()
+            elif ci and ch in (curses.KEY_DOWN, ord("j")): cur = ci[min(pos + 1, len(ci) - 1)]
+            elif ci and ch in (curses.KEY_UP, ord("k")): cur = ci[max(pos - 1, 0)]
+            elif ci and ch == curses.KEY_NPAGE: cur = ci[min(pos + body, len(ci) - 1)]
+            elif ci and ch == curses.KEY_PPAGE: cur = ci[max(pos - body, 0)]
+            elif ci and ch == ord("g"): cur = ci[0]
+            elif ci and ch == ord("G"): cur = ci[-1]
+            elif ch == ord("s"):
+                sort_mode = "size" if sort_mode == "recency" else "recency"
+                cur = top = 0
+            elif grouped and ch == ord("]"):
+                hd = [i for i, it in enumerate(items) if it[0] == "hdr"]
+                gh = max([i for i in hd if i <= cur], default=-1)
+                nxt = [i for i in hd if i > gh]
+                if nxt: cur = nxt[0] + 1
+            elif grouped and ch == ord("["):
+                hd = [i for i, it in enumerate(items) if it[0] == "hdr"]
+                gh = max([i for i in hd if i <= cur], default=None)
+                if gh is not None and cur > gh + 1: cur = gh + 1
+                else:
+                    prv = [i for i in hd if gh is not None and i < gh]
+                    if prv: cur = prv[-1] + 1
+            elif ch == ord("/"): filtering = True; flt = ""
+            elif ch == ord("c"): picked.clear()
+            elif ch == ord("a"):
+                for c in vis:
+                    if not c["live"]: picked.add(c["uuid"])
+            elif ch == ord(" "):
+                if ci and items[cur][0] == "chat":
+                    c = items[cur][1]
+                    if c["live"]: msg = "can't select a live session"
+                    else: picked.discard(c["uuid"]) if c["uuid"] in picked else picked.add(c["uuid"])
+                    cur = ci[min(pos + 1, len(ci) - 1)]
+            elif ch in (ord("d"), 10, 13):
+                if not picked:
+                    msg = "nothing selected"; continue
+                if confirm_delete([by[u] for u in picked if u in by]):
+                    for u in list(picked):
+                        if u in by: delete_chat(by[u]["dir"], u)
+                    chats = loader(); by = {c["uuid"]: c for c in chats}
+                    picked, msg = set(), "deleted."
+                else:
+                    msg = "cancelled."
+
+    curses.wrapper(main)
 
 def print_help():
     on = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -163,8 +434,10 @@ def print_help():
     print()
     print(HEAD("usage"))
     usage = [
-        ("reap [<name|path>]", "list chats, current project, or name = folder substring"),
-        ("reap --all", "list all projects, grouped by workspace"),
+        ("reap", "interactive picker: current project"),
+        ("reap <name|path>", "picker for a project (name = folder substring)"),
+        ("reap --all", "picker across all projects, grouped by workspace"),
+        ("reap ls [<name>|--all]", "plain list (no UI; pipe-friendly)"),
         ("reap rm <id>... [opts]", "delete by uuid prefix (for scripts)"),
         ("reap --help", "this help"),
         ("reap --version", "print version"),
@@ -179,7 +452,14 @@ def print_help():
                  ("-p <name>", "target another project (default: current dir)")]:
         print(f"    {CMD(a.ljust(11))}  {b}")
     print()
-    print(D("rm is a dry-run unless --apply; live sessions are protected."))
+    print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
+    for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
+                      ("select", "space pick   a select-all (filtered)   c clear"),
+                      ("act", "d / enter delete (asks to confirm)"),
+                      ("view", "s sort recency<->size   / filter   q quit")]:
+        print(f"  {CMD(cat.ljust(7))}  {keys}")
+    print()
+    print(D("deletes are confirmed first; live sessions are protected."))
 
 def pop_flag(lst, flag):
     if flag in lst: lst.remove(flag); return True
@@ -251,7 +531,20 @@ def main():
     if sub == "ls": return cmd_ls(argv[1:])
     if sub == "rm": return cmd_rm(argv[1:])
 
-    cmd_ls(argv)
+    rest = list(argv)
+    st = pop_flag(rest, "--selftest")
+    if pop_flag(rest, "--all"):
+        loader, title, grouped, where = load_all, "all projects", True, "all projects"
+    else:
+        proj = next((a for a in rest if not a.startswith("-")), None)
+        DIR = resolve_dir(proj)
+        if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
+        title = os.getcwd() if proj is None else pretty(DIR)
+        loader, grouped, where = (lambda d=DIR: load_chats(d)), False, title
+
+    if st: selftest(loader(), where)
+    elif not sys.stdout.isatty(): print_static(loader(), grouped)
+    else: run_ui(loader, title, grouped)
 
 if __name__ == "__main__":
     main()
