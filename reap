@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""reap, Claude Code chat manager: view and delete local chats.
+"""reap, Claude Code chat manager: view, peek and delete local chats.
 
 A chat = its transcript + sidecar dir + agents-view job record. reap deletes
 all three together, so a chat is gone from /resume AND the agents view.
@@ -19,10 +19,10 @@ Usage:
 Picker keys (press ? inside for this list):
   up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
   space pick (skips live)   a select-all (filtered)   c clear
-  d / enter delete selected (asks to confirm)
+  p peek (read-only preview)   d / enter delete selected (asks to confirm)
   s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
 """
-import json, os, sys, glob, time, shutil
+import json, os, sys, glob, time, shutil, textwrap
 from collections import Counter
 
 __version__ = "0.1.0"
@@ -40,6 +40,7 @@ HELP_LINES = [
     ("H", "select & act"),
     ("", "  space            toggle pick (skips live sessions)"),
     ("", "  a / c            select-all (filtered) / clear"),
+    ("", "  p                peek, read-only preview of the chat"),
     ("", "  d or enter       delete selected (lists them, asks y/N)"),
     ("", ""),
     ("H", "view"),
@@ -132,6 +133,32 @@ def meta(path):
     except OSError: pass
     return title, prompt, n
 
+def peek_turns(path, cap=250):
+    """Read a transcript into a list of (who, text) message turns. Read-only."""
+    out = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try: o = json.loads(line)
+                except Exception: continue
+                if o.get("type") not in ("user", "assistant") or o.get("isMeta"): continue
+                c = o.get("message", {}).get("content")
+                parts = []
+                if isinstance(c, str):
+                    parts = [c]
+                elif isinstance(c, list):
+                    for b in c:
+                        if not isinstance(b, dict): continue
+                        if b.get("type") == "text": parts.append(b.get("text", ""))
+                        elif b.get("type") == "tool_use": parts.append(f"[tool: {b.get('name', '?')}]")
+                        elif b.get("type") == "tool_result": parts.append("[tool result]")
+                text = " ".join(s for s in parts if s).strip()
+                if not text or text.startswith(("<local-command", "<command-", "Caveat:")): continue
+                out.append(("you" if o["type"] == "user" else "claude", " ".join(text.split())))
+                if len(out) >= cap: break
+    except OSError: pass
+    return out
+
 def load_chats(DIR):
     live = live_session_ids()
     now = time.time()
@@ -222,6 +249,9 @@ def selftest(chats, where):
     print("roles   :", dict(Counter(role(c["label"]) for c in chats)))
     print("live    :", [c["short"] for c in chats if c["live"]] or "none")
     print("projects:", dict(Counter(c["proj"] for c in chats)))
+    if chats:
+        t = peek_turns(chats[0]["path"])
+        print(f"peek({chats[0]['short']}): {len(t)} turns, first =", (t[0] if t else "none"))
     print_static(chats[:6], grouped=True)
 
 def run_ui(loader, title, grouped):
@@ -260,6 +290,38 @@ def run_ui(loader, title, grouped):
                 add(2 + j, 1, s, curses.A_BOLD if tag == "H" else 0)
             add(h - 1, 1, " any key to close", DIM)
             stdscr.refresh(); stdscr.getch()
+
+        def do_peek(c):                                  # read-only transcript preview
+            turns = peek_turns(c["path"])
+            lines = []
+            w0 = stdscr.getmaxyx()[1]
+            for who, text in turns:
+                lines.append(("H", who + ":"))
+                for ln in (textwrap.wrap(text, max(10, w0 - 4)) or [""]):
+                    lines.append(("", "  " + ln))
+                lines.append(("", ""))
+            if not lines: lines = [("", "(no readable messages)")]
+            off = 0
+            while True:
+                stdscr.erase()
+                h, w = stdscr.getmaxyx()
+                page = max(1, h - 4)
+                off = max(0, min(off, max(0, len(lines) - page)))
+                add(0, 1, "peek  " + fit(c["label"], w - 22), curses.A_BOLD)
+                add(0, max(1, w - 14), f"{len(turns)} turns", DIM)
+                for j, (tag, s) in enumerate(lines[off:off + page]):
+                    add(2 + j, 1, s, curses.A_BOLD if tag == "H" else 0)
+                add(h - 2, 0, "-" * (w - 1), DIM)
+                add(h - 1, 1, " up/down scroll - g/G ends - q/p back", DIM)
+                stdscr.refresh()
+                k = stdscr.getch()
+                if k in (ord("q"), 27, ord("p")): return
+                elif k in (curses.KEY_DOWN, ord("j")): off += 1
+                elif k in (curses.KEY_UP, ord("k")): off -= 1
+                elif k == curses.KEY_NPAGE: off += page
+                elif k == curses.KEY_PPAGE: off -= page
+                elif k == ord("g"): off = 0
+                elif k == ord("G"): off = len(lines)
 
         def confirm_delete(sel):
             sel = sorted(sel, key=lambda c: -c["size"])
@@ -357,7 +419,7 @@ def run_ui(loader, title, grouped):
             elif msg:
                 add(h - 1, 0, " " + msg, curses.A_BOLD)
             else:
-                add(h - 1, 0, " ? keys · space pick · d delete · / filter · q quit", DIM)
+                add(h - 1, 0, " ? keys · space pick · p peek · d delete · / filter · q quit", DIM)
                 if picked:
                     add(h - 1, max(1, w - 26), f"{len(picked)} picked - {human(psz)} free", curses.A_BOLD)
             stdscr.refresh()
@@ -401,6 +463,8 @@ def run_ui(loader, title, grouped):
             elif ch == ord("a"):
                 for c in vis:
                     if not c["live"]: picked.add(c["uuid"])
+            elif ch == ord("p"):
+                if ci and items[cur][0] == "chat": do_peek(items[cur][1])
             elif ch == ord(" "):
                 if ci and items[cur][0] == "chat":
                     c = items[cur][1]
@@ -427,7 +491,7 @@ def print_help():
     CMD = lambda s: c(s, "36"); HEAD = lambda s: c(s, "1;4")        # cyan / bold-underline
 
     print(f"{B('reap')} {D(': Claude Code chat manager')}")
-    print(D("view and delete your local Claude Code chats"))
+    print(D("view, peek and delete your local Claude Code chats"))
     print()
     print(D("a chat = transcript + sidecar dir + agents-view job record;"))
     print(D("reap removes all three, so it's gone from /resume and the agents view."))
@@ -455,7 +519,7 @@ def print_help():
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
                       ("select", "space pick   a select-all (filtered)   c clear"),
-                      ("act", "d / enter delete (asks to confirm)"),
+                      ("act", "p peek (read-only)   d / enter delete (asks to confirm)"),
                       ("view", "s sort recency<->size   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
