@@ -59,6 +59,9 @@ def resolve_dir(arg):
         return ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, ap.replace("/", "-"))
     cands = sorted(d for d in glob.glob(os.path.join(PROJ, "*"))
                    if os.path.isdir(d) and arg in os.path.basename(d))
+    if len(cands) > 1:                                    # tie-break: prefer an exact leaf match
+        exact = [d for d in cands if os.path.basename(d).endswith(arg)]
+        if len(exact) == 1: cands = exact
     if len(cands) == 1: return cands[0]
     if not cands: sys.exit(f"no project folder matches '{arg}'")
     sys.exit("ambiguous '%s':\n  %s" % (arg, "\n  ".join(os.path.basename(c) for c in cands)))
