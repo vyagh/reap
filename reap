@@ -29,6 +29,7 @@ __version__ = "0.1.0"
 
 HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
+LIVE_FRESH = 60   # secs: a transcript touched this recently counts as live (roster-lag backstop)
 
 HELP_LINES = [
     ("", "reap : Claude Code chat manager"),
@@ -72,15 +73,26 @@ def pretty(DIR):
     if name.startswith(prefix): name = name[len(prefix):]
     return name.lstrip("-") or os.path.basename(DIR)
 
+def read_json(path, tries=3):
+    """Read JSON, retrying briefly: roster/session files can be caught mid-write,
+    and a silent miss here would drop a live session's protection."""
+    for i in range(tries):
+        try:
+            with open(path) as fh: return json.load(fh)
+        except FileNotFoundError: return None
+        except (ValueError, OSError):
+            if i + 1 < tries: time.sleep(0.03)
+    return None
+
 def live_session_ids():
     ids = set()
     for p in glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json")):
-        try: ids.add(json.load(open(p)).get("sessionId"))
-        except Exception: pass
-    try:
-        r = json.load(open(os.path.join(HOME, ".claude", "daemon", "roster.json")))
-        for w in r.get("workers", {}).values(): ids.add(w.get("sessionId"))
-    except Exception: pass
+        o = read_json(p)
+        if isinstance(o, dict): ids.add(o.get("sessionId"))
+    r = read_json(os.path.join(HOME, ".claude", "daemon", "roster.json"))
+    if isinstance(r, dict):
+        for w in r.get("workers", {}).values():
+            if isinstance(w, dict): ids.add(w.get("sessionId"))
     return {i for i in ids if i}
 
 def dirsize(p):
@@ -176,7 +188,7 @@ def load_chats(DIR):
             "uuid": uuid, "short": uuid.split("-")[0], "dir": DIR, "proj": proj, "path": jp,
             "label": title or prompt or "(empty)",
             "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
-            "mt": mt, "rel": reltime(mt, now), "live": uuid in live,
+            "mt": mt, "rel": reltime(mt, now), "live": uuid in live or (now - mt) < LIVE_FRESH,
         })
     chats.sort(key=lambda c: c["mt"], reverse=True)
     return chats
@@ -191,10 +203,25 @@ def load_all():
     chats.sort(key=lambda c: (-recent[c["proj"]], c["proj"], -c["mt"]))  # group by folder, recent first
     return chats
 
+def resumer_job_dirs(uuid):
+    """Job dirs whose resumeSessionId is this chat: they'd dangle after delete."""
+    out = []
+    for d in glob.glob(os.path.join(HOME, ".claude", "jobs", "*")):
+        try:
+            with open(os.path.join(d, "state.json")) as fh: txt = fh.read()
+        except OSError: continue
+        if uuid not in txt: continue                     # cheap reject before json.loads
+        try:
+            if json.loads(txt).get("resumeSessionId") == uuid: out.append(d)
+        except Exception: pass
+    return out
+
 def delete_chat(DIR, uuid):
-    for p in (os.path.join(DIR, uuid + ".jsonl"),
-              os.path.join(DIR, uuid),
-              os.path.join(HOME, ".claude", "jobs", uuid.split("-")[0])):
+    targets = [os.path.join(DIR, uuid + ".jsonl"),
+               os.path.join(DIR, uuid),
+               os.path.join(HOME, ".claude", "jobs", uuid.split("-")[0])]
+    targets += resumer_job_dirs(uuid)                    # close the dangling-resumer edge
+    for p in targets:
         if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
         elif os.path.exists(p): os.remove(p)
 
@@ -573,7 +600,10 @@ def cmd_rm(args):
                     if os.path.basename(p).startswith(tok)]
             if not hits: print(f"!! no chat matches '{tok}'"); continue
             if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {hits}"); continue
-            if hits[0] in live: print(f"!! SKIP {hits[0]}, session is live"); continue
+            jp = os.path.join(DIR, hits[0] + ".jsonl")
+            fresh = os.path.exists(jp) and (time.time() - os.path.getmtime(jp)) < LIVE_FRESH
+            if hits[0] in live or fresh:
+                print(f"!! SKIP {hits[0]}: session is live"); continue
             plan.append((hits[0], None))
     if not plan:
         print("nothing to do"); return
