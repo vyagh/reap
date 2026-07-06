@@ -10,26 +10,35 @@ Usage:
   reap --all               picker across every project, grouped by workspace
   reap ls [<name>|--all]   print a plain list (no UI; pipe-friendly)
   reap rm <id>... [opts]   delete by uuid prefix (for scripts)   opts below
+  reap trash [--empty]     list recoverable deletes (or purge them all)
+  reap restore <id|name>   restore a chat from the trash
   reap --help              this help
 
   reap rm options:  --apply  actually delete (default is a dry-run)
+                   --hard   skip the trash, delete irreversibly
                    --orphans  remove leftover sidecar dirs (no transcript)
                    -p <name>  target another project (default: current dir)
+
+Deletes are soft: chats move to a trash and stay recoverable for 7 days
+(pruned lazily at launch, no background process). Undo with `u` / `reap restore`.
 
 Picker keys (press ? inside for this list):
   up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
   space pick (skips live)   a toggle select-all   c clear
-  p peek (read-only preview)   d / enter delete selected (asks to confirm)
+  p peek (read-only preview)   d / enter delete (to trash, asks to confirm)
+  u undo last delete   t trash browser (restore / purge)
   s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
 """
 import json, os, sys, glob, time, shutil, textwrap
 from collections import Counter
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
 LIVE_FRESH = 60   # secs: a transcript touched this recently counts as live (roster-lag backstop)
+TRASH = os.path.join(HOME, ".claude", ".reap-trash")
+TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 
 HELP_LINES = [
@@ -41,14 +50,18 @@ HELP_LINES = [
     ("", "  space          toggle pick (skips live sessions)"),
     ("", "  a / c          toggle select-all shown / clear"),
     ("", "  p              peek: read-only preview"),
-    ("", "  d or enter     delete selected (confirms first)"),
+    ("", "  d or enter     delete selected → trash (confirms first)"),
+    ("", ""),
+    ("H", "trash · undo"),
+    ("", "  u              undo the last delete"),
+    ("", "  t              trash browser: restore / purge"),
     ("", ""),
     ("H", "view"),
     ("", "  s              sort: recency ↔ size"),
     ("", "  /              filter title · uuid · workspace"),
     ("", "  q              quit"),
     ("", ""),
-    ("D", "a chat = transcript + sidecar + job record; delete removes all three."),
+    ("D", "delete moves the chat to a trash, recoverable for 7 days."),
 ]
 
 def resolve_dir(arg):
@@ -221,14 +234,68 @@ def resumer_job_dirs(uuid):
         except Exception: pass
     return out
 
-def delete_chat(DIR, uuid):
-    targets = [os.path.join(DIR, uuid + ".jsonl"),
-               os.path.join(DIR, uuid),
-               os.path.join(HOME, ".claude", "jobs", uuid.split("-")[0])]
-    targets += resumer_job_dirs(uuid)                    # close the dangling-resumer edge
-    for p in targets:
+def chat_artifacts(DIR, uuid):
+    return [os.path.join(DIR, uuid + ".jsonl"),
+            os.path.join(DIR, uuid),
+            os.path.join(HOME, ".claude", "jobs", uuid.split("-")[0])] + resumer_job_dirs(uuid)
+
+def delete_chat(DIR, uuid):                              # hard, irreversible
+    for p in chat_artifacts(DIR, uuid):
         if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
         elif os.path.exists(p): os.remove(p)
+
+def trash_chat(DIR, uuid, label=""):
+    """Soft-delete: move the chat's artifacts into the trash with a manifest. Reversible."""
+    dest = os.path.join(TRASH, f"{int(time.time() * 1000)}-{uuid}")
+    os.makedirs(dest, exist_ok=True)
+    moved = []
+    for src in chat_artifacts(DIR, uuid):
+        if not os.path.exists(src): continue
+        try:
+            shutil.move(src, os.path.join(dest, os.path.basename(src)))
+            moved.append([src, os.path.basename(src)])
+        except (OSError, shutil.Error): pass
+    with open(os.path.join(dest, "reap-meta.json"), "w") as fh:
+        json.dump({"uuid": uuid, "dir": DIR, "label": label, "at": time.time(), "moved": moved}, fh)
+    return dest
+
+def restore_entry(d):
+    """Move a trash entry's artifacts back to their original paths; drop the entry."""
+    try:
+        meta = json.load(open(os.path.join(d, "reap-meta.json")))
+    except Exception:
+        return None
+    for src, base in meta.get("moved", []):
+        s = os.path.join(d, base)
+        if os.path.exists(s) and not os.path.exists(src):
+            os.makedirs(os.path.dirname(src), exist_ok=True)
+            try: shutil.move(s, src)
+            except (OSError, shutil.Error): pass
+    shutil.rmtree(d, ignore_errors=True)
+    return meta
+
+def trash_list():
+    """Trash entries newest-first, each meta annotated with _dir and _size."""
+    out = []
+    for d in glob.glob(os.path.join(TRASH, "*")):
+        if not os.path.isdir(d): continue
+        try: m = json.load(open(os.path.join(d, "reap-meta.json")))
+        except Exception: continue
+        m["_dir"] = d; m["_size"] = dirsize(d)
+        out.append(m)
+    out.sort(key=lambda m: m.get("at", 0), reverse=True)
+    return out
+
+def prune_trash(days=TRASH_DAYS):
+    """Lazy retention: drop entries older than `days`. Runs once at launch, no daemon, ~ms."""
+    if not os.path.isdir(TRASH): return
+    cutoff = time.time() - days * 86400
+    for d in glob.glob(os.path.join(TRASH, "*")):
+        try: at = json.load(open(os.path.join(d, "reap-meta.json"))).get("at", 0)
+        except Exception:
+            try: at = os.path.getmtime(d)
+            except OSError: continue
+        if at < cutoff: shutil.rmtree(d, ignore_errors=True)
 
 def role(label):
     l = label.lower()
@@ -315,6 +382,7 @@ def run_ui(loader, title, grouped):
         chats = loader()
         by = {c["uuid"]: c for c in chats}
         picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, None, "recency"
+        undo = []                                        # trash dirs from this session's deletes
 
         def add(y, x, s, attr=0):
             h, w = stdscr.getmaxyx()
@@ -387,26 +455,76 @@ def run_ui(loader, title, grouped):
                 elif k == ord("g"): off = 0
                 elif k == ord("G"): off = len(lines)
 
+        def confirm_ask(prompt, hint, tattr=DANGER):
+            h, w = stdscr.getmaxyx()
+            ww = min(max(len(prompt) + 6, len(hint) + 6, 44), w - 2)
+            y0, x0 = max(0, h // 2 - 2), max(0, (w - ww) // 2)
+            box(y0, x0, 5, ww, prompt, tattr)
+            add(y0 + 2, x0 + 3, "y", tattr); add(y0 + 2, x0 + 5, hint, DIM)
+            stdscr.refresh()
+            return stdscr.getch() in (ord("y"), ord("Y"))
+
         def confirm_delete(sel):
             sel = sorted(sel, key=lambda c: -c["size"])
             freed = human(sum(c["size"] for c in sel))
             h, w = stdscr.getmaxyx()
             shown = min(len(sel), 8, max(1, h - 8))
             more = len(sel) - shown
-            ww = min(max(48, w * 2 // 3), w - 2)
+            ww = min(max(50, w * 2 // 3), w - 2)
             hh = shown + (1 if more else 0) + 5
             y0, x0 = max(0, (h - hh) // 2), max(0, (w - ww) // 2)
             n = len(sel)
-            box(y0, x0, hh, ww, f"delete {n} chat{'s' if n != 1 else ''} · frees {freed}", DANGER)
+            box(y0, x0, hh, ww, f"delete {n} chat{'s' if n != 1 else ''} · {freed}", curses.A_BOLD)
             for j in range(shown):
                 c = sel[j]
                 add(y0 + 2 + j, x0 + 3, f"{human(c['size']):>6}", DIM)
                 add(y0 + 2 + j, x0 + 11, fit(c["label"], ww - 14))
             if more: add(y0 + 2 + shown, x0 + 11, f"… and {more} more", DIM)
-            add(y0 + hh - 2, x0 + 3, "y", DANGER)
-            add(y0 + hh - 2, x0 + 5, "delete forever   ·   any other key cancels", DIM)
+            add(y0 + hh - 2, x0 + 3, "y", OK)
+            add(y0 + hh - 2, x0 + 5, f"move to trash · undo for {TRASH_DAYS}d · other key cancels", DIM)
             stdscr.refresh()
             return stdscr.getch() in (ord("y"), ord("Y"))
+
+        def do_trash():
+            sel = ch_reload = 0
+            while True:
+                ents = trash_list()
+                stdscr.erase()
+                h, w = stdscr.getmaxyx()
+                add(0, 1, " trash ", curses.A_REVERSE | curses.A_BOLD)
+                info = f"{len(ents)} chats · {human(sum(e['_size'] for e in ents))} · kept {TRASH_DAYS}d"
+                add(0, max(1, w - len(info) - 2), info, DIM)
+                add(1, 0, RULE * (w - 1), DIM)
+                page = max(1, h - 4)
+                if not ents: add(3, 2, "trash is empty, nothing deleted recently", DIM)
+                sel = max(0, min(sel, len(ents) - 1))
+                topi = max(0, min(sel - page + 1, len(ents) - page)) if len(ents) > page else 0
+                for j in range(min(page, len(ents))):
+                    e = ents[topi + j]; y = 2 + j
+                    left = max(0, TRASH_DAYS - int((time.time() - e.get("at", 0)) / 86400))
+                    row = f" {reltime(e.get('at', 0), time.time()):>4} {human(e['_size']):>6}  "
+                    lbl = fit(e.get("label") or "(empty)", w - len(row) - 12)
+                    if topi + j == sel:
+                        add(y, 0, (row + lbl + f"   {left}d left").ljust(w - 1), SEL)
+                    else:
+                        add(y, 0, row, DIM); add(y, len(row), lbl)
+                        add(y, len(row) + len(lbl) + 3, f"{left}d left", DIM)
+                scrollbar(2, page, topi, len(ents))
+                add(h - 2, 0, RULE * (w - 1), DIM)
+                add(h - 1, 1, "r restore · x purge · E empty · q back", DIM)
+                stdscr.refresh()
+                k = stdscr.getch()
+                if k in (ord("q"), ord("t"), 27): return ch_reload
+                elif ents and k in (curses.KEY_DOWN, ord("j")): sel += 1
+                elif ents and k in (curses.KEY_UP, ord("k")): sel = max(0, sel - 1)
+                elif ents and k in (ord("r"), 10, 13):
+                    restore_entry(ents[sel]["_dir"]); ch_reload = 1
+                elif ents and k == ord("x"):
+                    if confirm_ask("purge 1 chat permanently?", "delete forever · other cancels"):
+                        shutil.rmtree(ents[sel]["_dir"], ignore_errors=True)
+                elif ents and k == ord("E"):
+                    if confirm_ask(f"empty trash, {len(ents)} chats, forever?", "gone for good · other cancels"):
+                        for e in ents: shutil.rmtree(e["_dir"], ignore_errors=True)
 
         while True:
             stdscr.erase()
@@ -510,8 +628,10 @@ def run_ui(loader, title, grouped):
                 add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
             else:
                 x = 1
-                for key, act in (("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete"),
-                                 ("s", "sort"), ("/", "filter"), ("q", "quit")):
+                hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete"),
+                         ("t", "trash"), ("/", "filter"), ("q", "quit")]
+                if undo: hints.insert(4, ("u", "undo"))
+                for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
                     add(h - 1, x, act, DIM); x += len(act) + 3
                 if picked:
@@ -563,6 +683,19 @@ def run_ui(loader, title, grouped):
                     picked.update(sable)
             elif ch == ord("p"):
                 if ci and items[cur][0] == "chat": do_peek(items[cur][1])
+            elif ch == ord("t"):
+                if do_trash():                           # something restored -> refresh list
+                    chats = loader(); by = {c["uuid"]: c for c in chats}
+                    undo = [d for d in undo if os.path.isdir(d)]
+                    cur = top = 0
+            elif ch == ord("u"):
+                if not undo:
+                    msg = ("warn", "nothing to undo")
+                else:
+                    m = restore_entry(undo.pop())
+                    chats = loader(); by = {c["uuid"]: c for c in chats}
+                    msg = (("ok", f"restored {fit(m.get('label') or '?', 40)}") if m
+                           else ("warn", "could not restore"))
             elif ch == ord(" "):
                 if ci and items[cur][0] == "chat":
                     c = items[cur][1]
@@ -575,11 +708,11 @@ def run_ui(loader, title, grouped):
                 sel = [by[u] for u in picked if u in by]
                 if confirm_delete(sel):
                     for u in list(picked):
-                        if u in by: delete_chat(by[u]["dir"], u)
+                        if u in by: undo.append(trash_chat(by[u]["dir"], u, by[u]["label"]))
                     chats = loader(); by = {c["uuid"]: c for c in chats}
-                    n, fsz = len(sel), sum(c["size"] for c in sel)
+                    n = len(sel)
                     picked = set()
-                    msg = ("ok", f"deleted {n} chat{'s' if n != 1 else ''} · freed {human(fsz)}")
+                    msg = ("ok", f"trashed {n} chat{'s' if n != 1 else ''} · u undo · t trash")
                 else:
                     msg = ("warn", "cancelled")
 
@@ -604,6 +737,8 @@ def print_help():
         ("reap --all", "picker across all projects, grouped by workspace"),
         ("reap ls [<name>|--all]", "plain list (no UI; pipe-friendly)"),
         ("reap rm <id>... [opts]", "delete by uuid prefix (for scripts)"),
+        ("reap trash [--empty]", "list recoverable deletes (or purge all)"),
+        ("reap restore <id|name>", "restore a chat from the trash"),
         ("reap --help", "this help"),
         ("reap --version", "print version"),
     ]
@@ -613,6 +748,7 @@ def print_help():
     print()
     print(f"  {D('rm options')}")
     for a, b in [("--apply", "actually delete (default is a dry-run)"),
+                 ("--hard", "skip the trash: delete irreversibly"),
                  ("--orphans", "remove leftover sidecar dirs (no transcript)"),
                  ("-p <name>", "target another project (default: current dir)")]:
         print(f"    {CMD(a.ljust(11))}  {b}")
@@ -620,11 +756,11 @@ def print_help():
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
                       ("select", "space pick   a toggle select-all   c clear"),
-                      ("act", "p peek (read-only)   d / enter delete (asks to confirm)"),
+                      ("act", "p peek   d/enter delete (to trash)   u undo   t trash browser"),
                       ("view", "s sort recency<->size   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
-    print(D("deletes are confirmed first; live sessions are protected."))
+    print(D(f"deletes are confirmed first and reversible for {TRASH_DAYS} days; live sessions are protected."))
 
 def pop_flag(lst, flag):
     if flag in lst: lst.remove(flag); return True
@@ -651,6 +787,7 @@ def cmd_ls(args):
 def cmd_rm(args):
     args = list(args)
     apply = pop_flag(args, "--apply")
+    hard = pop_flag(args, "--hard")                      # skip trash, delete irreversibly
     orphans = pop_flag(args, "--orphans")
     proj = pop_opt(args, "-p")
     DIR = resolve_dir(proj)                              # None -> current project
@@ -678,16 +815,50 @@ def cmd_rm(args):
             plan.append((hits[0], None))
     if not plan:
         print("nothing to do"); return
+    verb = "purge" if hard else "trash"
     for uuid, path in plan:
         what = f"orphan dir {os.path.basename(path)}" if path else f"{uuid} (transcript + sidecar + job)"
-        print(("DELETE " if apply else "would delete ") + what)
+        print((verb.upper() + " " if apply else f"would {verb} ") + what)
     if apply:
         for uuid, path in plan:
-            if path: shutil.rmtree(path, ignore_errors=True)
-            else: delete_chat(DIR, uuid)
-        print("done.")
+            if path: shutil.rmtree(path, ignore_errors=True)     # orphan dirs: always hard
+            elif hard: delete_chat(DIR, uuid)
+            else: trash_chat(DIR, uuid)
+        print("done." if hard else f"done, in trash for {TRASH_DAYS}d (reap restore to undo)")
     else:
-        print("dry-run, add --apply to delete")
+        print(f"dry-run, add --apply to {verb}" + ("" if hard else " (--hard to skip trash)"))
+
+def cmd_trash(args):
+    args = list(args)
+    if pop_flag(args, "--empty"):
+        ents = trash_list()
+        for e in ents: shutil.rmtree(e["_dir"], ignore_errors=True)
+        print(f"emptied trash, purged {len(ents)} chats"); return
+    ents = trash_list()
+    if not ents: print("trash is empty"); return
+    now = time.time()
+    for e in ents:
+        left = max(0, TRASH_DAYS - int((now - e.get("at", 0)) / 86400))
+        print(f"  {reltime(e.get('at', 0), now):>4} {human(e['_size']):>6}  {e['uuid'][:8]}  "
+              f"{left}d left  {(e.get('label') or '')[:48]}")
+    print(f"\n{len(ents)} chats · {human(sum(e['_size'] for e in ents))} · restore: reap restore <id|name>")
+
+def cmd_restore(args):
+    ids = [a for a in args if not a.startswith("-")]
+    ents = trash_list()
+    if not ids:
+        if not ents: print("trash is empty"); return
+        print("usage: reap restore <id-prefix | name>...   in trash:")
+        for e in ents: print(f"  {e['uuid'][:8]}  {(e.get('label') or '')[:50]}")
+        return
+    for tok in ids:
+        hits = [e for e in ents if e["uuid"].startswith(tok)]
+        if not hits:                                         # fall back to unique name substring
+            hits = [e for e in ents if tok.lower() in (e.get("label") or "").lower()]
+        if not hits: print(f"!! no trashed chat matches '{tok}'"); continue
+        if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {[e['uuid'][:8] for e in hits]}"); continue
+        m = restore_entry(hits[0]["_dir"])
+        print(f"restored {hits[0]['uuid'][:8]}  {(m.get('label') or '') if m else '(failed)'}")
 
 def main():
     argv = sys.argv[1:]
@@ -695,9 +866,12 @@ def main():
         print(f"reap {__version__}"); return
     if "-h" in argv or "--help" in argv:
         print_help(); return
+    prune_trash()                                        # lazy retention, cheap, no daemon
     sub = argv[0] if argv and not argv[0].startswith("-") else None
     if sub == "ls": return cmd_ls(argv[1:])
     if sub == "rm": return cmd_rm(argv[1:])
+    if sub == "trash": return cmd_trash(argv[1:])
+    if sub == "restore": return cmd_restore(argv[1:])
 
     rest = list(argv)
     st = pop_flag(rest, "--selftest")
