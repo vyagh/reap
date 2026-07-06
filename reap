@@ -18,7 +18,7 @@ Usage:
 
 Picker keys (press ? inside for this list):
   up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
-  space pick (skips live)   a select-all (filtered)   c clear
+  space pick (skips live)   a toggle select-all   c clear
   p peek (read-only preview)   d / enter delete selected (asks to confirm)
   s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
 """
@@ -30,26 +30,25 @@ __version__ = "0.1.0"
 HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
 LIVE_FRESH = 60   # secs: a transcript touched this recently counts as live (roster-lag backstop)
+RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 
 HELP_LINES = [
-    ("", "reap : Claude Code chat manager"),
-    ("", ""),
     ("H", "move"),
-    ("", "  up/down or j/k   line          PgUp/PgDn  page"),
-    ("", "  g / G            top / bottom   [ / ]      prev / next workspace"),
+    ("", "  ↑/↓  j/k       line            PgUp/PgDn   page"),
+    ("", "  g / G          top / bottom    [ / ]       prev / next workspace"),
     ("", ""),
     ("H", "select & act"),
-    ("", "  space            toggle pick (skips live sessions)"),
-    ("", "  a / c            select-all (filtered) / clear"),
-    ("", "  p                peek, read-only preview of the chat"),
-    ("", "  d or enter       delete selected (lists them, asks y/N)"),
+    ("", "  space          toggle pick (skips live sessions)"),
+    ("", "  a / c          toggle select-all shown / clear"),
+    ("", "  p              peek: read-only preview"),
+    ("", "  d or enter     delete selected (confirms first)"),
     ("", ""),
     ("H", "view"),
-    ("", "  s                sort: recency <-> size"),
-    ("", "  /                filter by title / uuid / workspace"),
-    ("", "  q                quit"),
+    ("", "  s              sort: recency ↔ size"),
+    ("", "  /              filter title · uuid · workspace"),
+    ("", "  q              quit"),
     ("", ""),
-    ("", "deleting removes transcript + sidecar dir + job record together."),
+    ("D", "a chat = transcript + sidecar + job record; delete removes all three."),
 ]
 
 def resolve_dir(arg):
@@ -110,6 +109,12 @@ def human(n):
             return f"{n:.1f}{u}" if (u in "MG" and n < 10) else f"{n:.0f}{u}"
         n /= 1024
     return f"{n:.0f}T"
+
+def spark(n):
+    """One-glyph size scale, makes the heavy chats pop in the list."""
+    for i, t in enumerate((100 << 10, 1 << 20, 3 << 20, 10 << 20, 30 << 20, 100 << 20)):
+        if n < t: return "▁▂▃▄▅▆"[i]
+    return "█"
 
 def reltime(mt, now):
     d = max(0, now - mt)
@@ -291,20 +296,25 @@ def run_ui(loader, title, grouped):
     def main(stdscr):
         curses.curs_set(0)
         curses.use_default_colors()
-        COL = {}
-        for i, (k, v) in enumerate({"planner": curses.COLOR_CYAN, "worker": curses.COLOR_GREEN,
-                                    "reviewer": curses.COLOR_YELLOW, "thinker": curses.COLOR_MAGENTA}.items(), 1):
+
+        def pair(i, fg):
             try:
-                curses.init_pair(i, v, -1); COL[k] = curses.color_pair(i)
+                curses.init_pair(i, fg, -1); return curses.color_pair(i)
             except Exception:
-                COL[k] = 0
-        SEL = curses.A_REVERSE | curses.A_BOLD          # theme-adaptive, always high-contrast
+                return 0
+        COL = {"planner": pair(1, curses.COLOR_CYAN), "worker": pair(2, curses.COLOR_GREEN),
+               "reviewer": pair(3, curses.COLOR_YELLOW), "thinker": pair(4, curses.COLOR_MAGENTA)}
+        OK = pair(5, curses.COLOR_GREEN) | curses.A_BOLD
+        YEL = pair(6, curses.COLOR_YELLOW)
+        WARN = YEL | curses.A_BOLD
+        DANGER = pair(7, curses.COLOR_RED) | curses.A_BOLD
+        ACC = pair(8, curses.COLOR_CYAN)
+        SEL = curses.A_REVERSE | curses.A_BOLD          # cursor row: theme-adaptive, high-contrast
         DIM = curses.A_DIM
-        HDR = curses.A_BOLD | curses.A_UNDERLINE
 
         chats = loader()
         by = {c["uuid"]: c for c in chats}
-        picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, "", "recency"
+        picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, None, "recency"
 
         def add(y, x, s, attr=0):
             h, w = stdscr.getmaxyx()
@@ -312,13 +322,32 @@ def run_ui(loader, title, grouped):
             try: stdscr.addstr(y, x, s[:max(0, w - 1 - x)], attr)
             except curses.error: pass
 
-        def do_help():
-            stdscr.erase()
+        def edge(y, ch, attr=0):                         # write in the last column (add() clips it)
             h, w = stdscr.getmaxyx()
-            add(0, 1, "reap · keys", curses.A_BOLD)
-            for j, (tag, s) in enumerate(HELP_LINES):
-                add(2 + j, 1, s, curses.A_BOLD if tag == "H" else 0)
-            add(h - 1, 1, " any key to close", DIM)
+            if 0 <= y < h - 1:
+                try: stdscr.addstr(y, w - 1, ch, attr)
+                except curses.error: pass
+
+        def box(y0, x0, hh, ww, ttl="", tattr=curses.A_BOLD):
+            add(y0, x0, "┌" + RULE * (ww - 2) + "┐", DIM)
+            for yy in range(y0 + 1, y0 + hh - 1):
+                add(yy, x0, "│" + " " * (ww - 2), DIM); add(yy, x0 + ww - 1, "│", DIM)
+            add(y0 + hh - 1, x0, "└" + RULE * (ww - 2) + "┘", DIM)
+            if ttl: add(y0, x0 + 2, f" {ttl} ", tattr)
+
+        def scrollbar(y0, page, off, n):
+            if n <= page or page < 2: return
+            for j in range(page): edge(y0 + j, "│", DIM)
+            edge(y0 + int((page - 1) * off / (n - page)), "┃", ACC | curses.A_BOLD)
+
+        def do_help():
+            h, w = stdscr.getmaxyx()
+            ww = min(74, w - 2); hh = min(len(HELP_LINES) + 4, h)
+            y0, x0 = max(0, (h - hh) // 2), max(0, (w - ww) // 2)
+            box(y0, x0, hh, ww, "reap · keys")
+            for j, (tag, s) in enumerate(HELP_LINES[:hh - 4]):
+                add(y0 + 2 + j, x0 + 3, s, ACC | curses.A_BOLD if tag == "H" else DIM if tag == "D" else 0)
+            add(y0 + hh - 2, x0 + 3, "any key to close", DIM)
             stdscr.refresh(); stdscr.getch()
 
         def do_peek(c):                                  # read-only transcript preview
@@ -326,9 +355,9 @@ def run_ui(loader, title, grouped):
             lines = []
             w0 = stdscr.getmaxyx()[1]
             for who, text in turns:
-                lines.append(("H", who + ":"))
-                for ln in (textwrap.wrap(text, max(10, w0 - 4)) or [""]):
-                    lines.append(("", "  " + ln))
+                lines.append(("u" if who == "you" else "a", BAR + " " + who))
+                for ln in (textwrap.wrap(text, max(10, min(w0 - 6, 110))) or [""]):
+                    lines.append(("", "   " + ln))
                 lines.append(("", ""))
             if not lines: lines = [("", "(no readable messages)")]
             off = 0
@@ -337,12 +366,17 @@ def run_ui(loader, title, grouped):
                 h, w = stdscr.getmaxyx()
                 page = max(1, h - 4)
                 off = max(0, min(off, max(0, len(lines) - page)))
-                add(0, 1, "peek  " + fit(c["label"], w - 22), curses.A_BOLD)
-                add(0, max(1, w - 14), f"{len(turns)} turns", DIM)
+                pct = 100 if len(lines) <= page else int(100 * (off + page) / len(lines))
+                add(0, 1, "peek", curses.A_BOLD)
+                add(0, 6, fit(c["label"], w - 28), ACC | curses.A_BOLD)
+                pos = f"{len(turns)} turns · {pct}%"
+                add(0, max(1, w - len(pos) - 2), pos, DIM)
+                add(1, 0, RULE * (w - 1), DIM)
                 for j, (tag, s) in enumerate(lines[off:off + page]):
-                    add(2 + j, 1, s, curses.A_BOLD if tag == "H" else 0)
-                add(h - 2, 0, "-" * (w - 1), DIM)
-                add(h - 1, 1, " up/down scroll - g/G ends - q/p back", DIM)
+                    add(2 + j, 1, s, OK if tag == "u" else ACC | curses.A_BOLD if tag == "a" else 0)
+                scrollbar(2, page, off, len(lines))
+                add(h - 2, 0, RULE * (w - 1), DIM)
+                add(h - 1, 1, "↑/↓ scroll · g/G ends · q back", DIM)
                 stdscr.refresh()
                 k = stdscr.getch()
                 if k in (ord("q"), 27, ord("p")): return
@@ -357,15 +391,20 @@ def run_ui(loader, title, grouped):
             sel = sorted(sel, key=lambda c: -c["size"])
             freed = human(sum(c["size"] for c in sel))
             h, w = stdscr.getmaxyx()
-            shown = min(len(sel), 10, max(1, h - 6))
-            y0 = h - 3 - shown
-            add(y0, 0, f" delete {len(sel)} chats ({freed})?".ljust(w - 1), curses.A_REVERSE)
+            shown = min(len(sel), 8, max(1, h - 8))
+            more = len(sel) - shown
+            ww = min(max(48, w * 2 // 3), w - 2)
+            hh = shown + (1 if more else 0) + 5
+            y0, x0 = max(0, (h - hh) // 2), max(0, (w - ww) // 2)
+            n = len(sel)
+            box(y0, x0, hh, ww, f"delete {n} chat{'s' if n != 1 else ''} · frees {freed}", DANGER)
             for j in range(shown):
                 c = sel[j]
-                add(y0 + 1 + j, 0, f"   {human(c['size']):>6}  {fit(c['label'], w - 13)}".ljust(w - 1), curses.A_REVERSE)
-            if len(sel) > shown:
-                add(y0 + 1 + shown, 0, f"   … +{len(sel) - shown} more".ljust(w - 1), curses.A_REVERSE)
-            add(h - 1, 0, " y = delete  -  any other key = cancel".ljust(w - 1), curses.A_REVERSE)
+                add(y0 + 2 + j, x0 + 3, f"{human(c['size']):>6}", DIM)
+                add(y0 + 2 + j, x0 + 11, fit(c["label"], ww - 14))
+            if more: add(y0 + 2 + shown, x0 + 11, f"… and {more} more", DIM)
+            add(y0 + hh - 2, x0 + 3, "y", DANGER)
+            add(y0 + hh - 2, x0 + 5, "delete forever   ·   any other key cancels", DIM)
             stdscr.refresh()
             return stdscr.getch() in (ord("y"), ord("Y"))
 
@@ -402,14 +441,19 @@ def run_ui(loader, title, grouped):
 
             total = sum(c["size"] for c in chats)
             psz = sum(by[u]["size"] for u in picked if u in by)
-            t = projlabel(title, w - 28)
-            stag = "  · by size" if sort_mode == "size" else ""
-            add(0, 1, "reap", curses.A_BOLD)
-            add(0, 5, t, DIM)
-            add(0, max(1, w - 26 - len(stag)), f"{len(chats)} chats - {human(total)}{stag}", DIM)
+            add(0, 1, " reap ", curses.A_REVERSE | curses.A_BOLD)
+            add(0, 8, projlabel(title, w - 40), DIM)
+            stats = f"{len(chats)} chats · {human(total)}"
+            badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
+            add(0, max(1, w - len(stats) - len(badge) - 2), stats, DIM)
+            if badge: add(0, max(1, w - len(badge) - 1), badge, ACC | curses.A_BOLD)
+            add(1, 0, RULE * (w - 1), DIM)
 
             def draw_hdr(y, it):
-                add(y, 0, f" ▌ {projlabel(it[1], w - 24)}   {it[2][0]} chats · {human(it[2][1])}".ljust(w - 1), HDR)
+                name = projlabel(it[1], max(8, w - 30))
+                add(y, 1, BAR, ACC | curses.A_BOLD)
+                add(y, 3, name, curses.A_BOLD)
+                add(y, 5 + len(name), f"{it[2][0]} chats · {human(it[2][1])}", DIM)
 
             if not vis:
                 add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
@@ -425,37 +469,58 @@ def run_ui(loader, title, grouped):
                 if it[0] == "hdr":
                     draw_hdr(y, it); continue
                 c = it[1]
-                box = "[x]" if c["uuid"] in picked else "[ ]"
+                on = c["uuid"] in picked
+                mark = PICK_ON if on else PICK_OFF
                 ind = "  " if grouped else ""
-                live = "  * live" if c["live"] else ""
+                live = "  ● live" if c["live"] else ""
                 if idx == cur:
-                    pre = f" {ind}{box} {c['rel']:>3} {human(c['size']):>6}  "
+                    pre = f" {ind}{mark} {c['rel']:>3} {human(c['size']):>6} {spark(c['size'])}  "
                     lbl = fit(c["label"], max(0, w - 1 - len(pre) - len(live)))
                     add(y, 0, (pre + lbl + live).ljust(w - 1), SEL)
                     continue
-                pre = f" {ind}{box} "
-                add(y, 0, pre); x = len(pre)
-                seg = f"{c['rel']:>3} {human(c['size']):>6}  "
+                add(y, 0, " " + ind); x = 1 + len(ind)
+                add(y, x, mark, OK if on else DIM); x += 1
+                seg = f" {c['rel']:>3} "
                 add(y, x, seg, DIM); x += len(seg)
+                szat = YEL if c["size"] >= (10 << 20) else DIM
+                sz = f"{human(c['size']):>6} " + spark(c["size"])
+                add(y, x, sz, szat); x += len(sz) + 2
                 r = role(c["label"])
                 tattr = curses.A_BOLD if c["live"] else DIM if r == "stale" else COL.get(r, 0)
                 lbl = fit(c["label"], max(0, w - 1 - x - len(live)))
-                add(y, x, lbl, tattr); x += len(lbl)
-                if c["live"]: add(y, x, "  * live", curses.A_BOLD)
+                p = lbl.lower().find(f) if flt else -1
+                if p >= 0:                               # underline the filter match
+                    add(y, x, lbl[:p], tattr)
+                    add(y, x + p, lbl[p:p + len(f)], tattr | curses.A_BOLD | curses.A_UNDERLINE)
+                    add(y, x + p + len(f), lbl[p + len(f):], tattr)
+                else:
+                    add(y, x, lbl, tattr)
+                x += len(lbl)
+                if c["live"]: add(y, x, "  ● live", OK)
+            scrollbar(base, body, top, len(items))
 
-            add(h - 2, 0, "-" * (w - 1), DIM)
+            add(h - 2, 0, RULE * (w - 1), DIM)
             if filtering:
-                add(h - 1, 0, f" /{flt}", curses.A_BOLD)
+                add(h - 1, 1, "/", ACC | curses.A_BOLD)
+                add(h - 1, 2, flt, curses.A_BOLD)
+                add(h - 1, 2 + len(flt), "▏", DIM)
+                mtxt = f"{len(vis)} match{'es' if len(vis) != 1 else ''} · enter keep · esc clear"
+                add(h - 1, max(1, w - len(mtxt) - 2), mtxt, DIM)
             elif msg:
-                add(h - 1, 0, " " + msg, curses.A_BOLD)
+                add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
             else:
-                add(h - 1, 0, " ? keys · space pick · p peek · d delete · / filter · q quit", DIM)
+                x = 1
+                for key, act in (("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete"),
+                                 ("s", "sort"), ("/", "filter"), ("q", "quit")):
+                    add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
+                    add(h - 1, x, act, DIM); x += len(act) + 3
                 if picked:
-                    add(h - 1, max(1, w - 26), f"{len(picked)} picked - {human(psz)} free", curses.A_BOLD)
+                    ptxt = f"{PICK_ON} {len(picked)} picked · {human(psz)}"
+                    add(h - 1, max(1, w - len(ptxt) - 2), ptxt, OK)
             stdscr.refresh()
 
             ch = stdscr.getch()
-            msg = ""
+            msg = None
             if filtering:
                 if ch in (10, 13): filtering = False
                 elif ch == 27: filtering = False; flt = ""
@@ -490,27 +555,33 @@ def run_ui(loader, title, grouped):
                     if prv: cur = prv[-1] + 1
             elif ch == ord("/"): filtering = True; flt = ""
             elif ch == ord("c"): picked.clear()
-            elif ch == ord("a"):
-                for c in vis:
-                    if not c["live"]: picked.add(c["uuid"])
+            elif ch == ord("a"):                         # toggle: all shown picked -> unpick them
+                sable = [c["uuid"] for c in vis if not c["live"]]
+                if sable and all(u in picked for u in sable):
+                    for u in sable: picked.discard(u)
+                else:
+                    picked.update(sable)
             elif ch == ord("p"):
                 if ci and items[cur][0] == "chat": do_peek(items[cur][1])
             elif ch == ord(" "):
                 if ci and items[cur][0] == "chat":
                     c = items[cur][1]
-                    if c["live"]: msg = "can't select a live session"
+                    if c["live"]: msg = ("warn", "can't pick a live session")
                     else: picked.discard(c["uuid"]) if c["uuid"] in picked else picked.add(c["uuid"])
                     cur = ci[min(pos + 1, len(ci) - 1)]
             elif ch in (ord("d"), 10, 13):
                 if not picked:
-                    msg = "nothing selected"; continue
-                if confirm_delete([by[u] for u in picked if u in by]):
+                    msg = ("warn", "nothing selected"); continue
+                sel = [by[u] for u in picked if u in by]
+                if confirm_delete(sel):
                     for u in list(picked):
                         if u in by: delete_chat(by[u]["dir"], u)
                     chats = loader(); by = {c["uuid"]: c for c in chats}
-                    picked, msg = set(), "deleted."
+                    n, fsz = len(sel), sum(c["size"] for c in sel)
+                    picked = set()
+                    msg = ("ok", f"deleted {n} chat{'s' if n != 1 else ''} · freed {human(fsz)}")
                 else:
-                    msg = "cancelled."
+                    msg = ("warn", "cancelled")
 
     curses.wrapper(main)
 
@@ -548,7 +619,7 @@ def print_help():
     print()
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
-                      ("select", "space pick   a select-all (filtered)   c clear"),
+                      ("select", "space pick   a toggle select-all   c clear"),
                       ("act", "p peek (read-only)   d / enter delete (asks to confirm)"),
                       ("view", "s sort recency<->size   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
