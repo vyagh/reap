@@ -44,6 +44,7 @@ TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
+BIG_CHAT = 10 << 20            # sizes at/above this are highlighted
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
 PANE_MIN = 42                  # ...but only when there's at least this much room for the pane
 LEAF_W = 24                    # pad the project leaf so group stats line up in a real column
@@ -103,6 +104,13 @@ def read_json(path, tries=3):
         except (ValueError, OSError):
             if i + 1 < tries: time.sleep(0.03)
     return None
+
+def is_live(mt, uuid, live, now):
+    """One policy for 'don't touch this': in the roster/sessions, or touched < LIVE_FRESH ago."""
+    return uuid in live or (now - mt) < LIVE_FRESH
+
+def days_left(at, now):
+    return max(0, TRASH_DAYS - int((now - at) / 86400))
 
 def live_session_ids():
     ids = set()
@@ -214,7 +222,7 @@ def load_chats(DIR):
             "titled": bool(title),                       # else the label is just its first message
             "cwd": cwd,                                  # real path, so headers aren't dash-mangled
             "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
-            "mt": mt, "rel": reltime(mt, now), "live": uuid in live or (now - mt) < LIVE_FRESH,
+            "mt": mt, "rel": reltime(mt, now), "live": is_live(mt, uuid, live, now),
         })
     chats.sort(key=lambda c: c["mt"], reverse=True)
     return chats
@@ -276,10 +284,8 @@ def trash_chat(DIR, uuid, label=""):
 
 def restore_entry(d):
     """Move a trash entry's artifacts back to their original paths; drop the entry."""
-    try:
-        meta = json.load(open(os.path.join(d, "reap-meta.json")))
-    except Exception:
-        return None
+    meta = read_json(os.path.join(d, "reap-meta.json"))
+    if not isinstance(meta, dict): return None
     for src, base in meta.get("moved", []):
         s = os.path.join(d, base)
         if os.path.exists(s) and not os.path.exists(src):
@@ -294,8 +300,8 @@ def trash_list():
     out = []
     for d in glob.glob(os.path.join(TRASH, "*")):
         if not os.path.isdir(d): continue
-        try: m = json.load(open(os.path.join(d, "reap-meta.json")))
-        except Exception: continue
+        m = read_json(os.path.join(d, "reap-meta.json"))
+        if not isinstance(m, dict): continue
         m["_dir"] = d; m["_size"] = dirsize(d)
         out.append(m)
     out.sort(key=lambda m: m.get("at", 0), reverse=True)
@@ -311,8 +317,9 @@ def prune_trash(days=TRASH_DAYS):
     if not os.path.isdir(TRASH): return
     cutoff = time.time() - days * 86400
     for d in glob.glob(os.path.join(TRASH, "*")):
-        try: at = json.load(open(os.path.join(d, "reap-meta.json"))).get("at", 0)
-        except Exception:
+        m = read_json(os.path.join(d, "reap-meta.json"))
+        if isinstance(m, dict): at = m.get("at", 0)
+        else:
             try: at = os.path.getmtime(d)
             except OSError: continue
         if at < cutoff: shutil.rmtree(d, ignore_errors=True)
@@ -351,6 +358,12 @@ def order(chats, mode, grouped):
         return sorted(chats, key=lambda c: (-tot[c["proj"]], c["proj"], -c["size"]))
     return sorted(chats, key=lambda c: -c["size"])
 
+def group_of(items, i):
+    """Index of the group header governing row i (nearest 'hdr' at or before i), or None."""
+    for j in range(min(i, len(items) - 1), -1, -1):
+        if items[j][0] == "hdr": return j
+    return None
+
 def plan_view(items, cur, top, avail, grouped):
     """Scroll math + sticky header. Returns (top, pinned_hdr_idx_or_None, body_rows)."""
     if not items: return 0, None, avail
@@ -358,10 +371,7 @@ def plan_view(items, cur, top, avail, grouped):
     top = min(top, cur)
     if cur >= top + avail: top = cur - avail + 1
     top = max(0, top)
-    gh = None
-    if grouped:
-        for i in range(cur, -1, -1):
-            if items[i][0] == "hdr": gh = i; break
+    gh = group_of(items, cur) if grouped else None
     if gh is not None and gh < top:                       # real header scrolled off -> pin it
         body = max(1, avail - 1)
         if cur >= top + body: top = cur - body + 1
@@ -430,6 +440,11 @@ def run_ui(loader, title, grouped):
         tn, tb = trash_stat()                            # cached; refreshed only on change
         folded = set()                                   # collapsed project groups
         pcache = {}                                       # uuid -> preview turns (lazy, cached)
+
+        def reload():                                    # after any trash-mutating action
+            nonlocal chats, by, tn, tb
+            chats = loader(); by = {c["uuid"]: c for c in chats}
+            tn, tb = trash_stat()
 
         def add(y, x, s, attr=0):
             h, w = stdscr.getmaxyx()
@@ -547,10 +562,11 @@ def run_ui(loader, title, grouped):
                 if not ents: add(3, 2, "trash is empty, nothing deleted recently", DIM)
                 sel = max(0, min(sel, len(ents) - 1))
                 topi = max(0, min(sel - page + 1, len(ents) - page)) if len(ents) > page else 0
+                now = time.time()
                 for j in range(min(page, len(ents))):
                     e = ents[topi + j]; y = 2 + j
-                    left = max(0, TRASH_DAYS - int((time.time() - e.get("at", 0)) / 86400))
-                    row = f" {reltime(e.get('at', 0), time.time()):>4} {human(e['_size']):>6}  "
+                    left = days_left(e.get("at", 0), now)
+                    row = f" {reltime(e.get('at', 0), now):>4} {human(e['_size']):>6}  "
                     lbl = fit(e.get("label") or "(empty)", w - len(row) - 12)
                     if topi + j == sel:
                         add(y, 0, (row + lbl + f"   {left}d left").ljust(w - 1), SEL)
@@ -665,12 +681,12 @@ def run_ui(loader, title, grouped):
                 c = it[1]
                 add(2, px, fit(c["label"] if c["titled"] else "untitled", pw),
                     curses.A_BOLD if c["titled"] else DIM)
-                full = c["cwd"] or ""
-                if full.startswith(HOME): full = "~" + full[len(HOME):]
+                leaf, parent = split_path(c["cwd"], "")
+                full = (parent + "/" + leaf) if parent else leaf
                 if full: add(3, px, fit(full, pw), DIM)
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
                 bits = f"{human(c['size'])} · {plural(c['msgs'], 'msg')} · {when}"
-                add(5, px, fit(bits, pw), YEL if c["size"] >= (10 << 20) else DIM)
+                add(5, px, fit(bits, pw), YEL if c["size"] >= BIG_CHAT else DIM)
                 if c["live"] and len(bits) + 8 < pw: add(5, px + len(bits) + 1, "● live", OK)
                 add(6, px, RULE * pw, DIM)
                 turns = pcache.get(c["uuid"])            # lazy + cached: smooth to hold j
@@ -715,7 +731,7 @@ def run_ui(loader, title, grouped):
                 add(y, x, mark, OK if on else DIM); x += 1
                 seg = f" {c['rel']:>3} "
                 add(y, x, seg, DIM); x += len(seg)
-                szat = YEL if c["size"] >= (10 << 20) else DIM
+                szat = YEL if c["size"] >= BIG_CHAT else DIM
                 sz = f"{human(c['size']):>6}"
                 add(y, x, sz, szat); x += len(sz) + 2
                 r = role(c["label"])
@@ -737,9 +753,7 @@ def run_ui(loader, title, grouped):
                 for j in range(body): add(2 + j, cw + 1, "│", DIM)
                 if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
                     draw_detail(items[cur])
-                scrollbar(base, body, top, len(items), cw + 1)
-            else:
-                scrollbar(base, body, top, len(items), cw)
+            scrollbar(base, body, top, len(items), cw + 1 if pane else cw)
 
             add(h - 2, 0, RULE * rw, DIM)
             if filtering:
@@ -752,9 +766,9 @@ def run_ui(loader, title, grouped):
                 add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
             else:
                 x = 1
-                hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete"),
-                         ("z", "fold"), ("t", "trash"), ("/", "filter"), ("q", "quit")]
-                if undo: hints.insert(4, ("u", "undo"))
+                hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
+                if undo: hints.append(("u", "undo"))
+                hints += [("z", "fold"), ("t", "trash"), ("/", "filter"), ("q", "quit")]
                 for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
                     add(h - 1, x, act, DIM); x += len(act) + 3
@@ -798,9 +812,10 @@ def run_ui(loader, title, grouped):
                     prv = [i for i in hd if gh is not None and i < gh]
                     if prv: cur = prv[-1] + 1
             elif grouped and ch in (ord("z"), curses.KEY_LEFT, curses.KEY_RIGHT):
-                gp = next((items[i][1] for i in range(min(cur, len(items) - 1), -1, -1)
-                           if items[i][0] == "hdr"), None)
-                if gp: folded.discard(gp) if gp in folded else folded.add(gp)
+                gi = group_of(items, cur)
+                if gi is not None:
+                    gp = items[gi][1]
+                    folded.discard(gp) if gp in folded else folded.add(gp)
             elif grouped and ch == ord("Z"):
                 allp = {c["proj"] for c in vis}
                 folded.clear() if folded >= allp else folded.update(allp)
@@ -817,17 +832,15 @@ def run_ui(loader, title, grouped):
                 if ci and items[cur][0] == "chat": do_peek(items[cur][1])
             elif ch == ord("t"):
                 if do_trash():                           # trash changed -> refresh list + stat
-                    chats = loader(); by = {c["uuid"]: c for c in chats}
+                    reload()
                     undo = [d for d in undo if os.path.isdir(d)]
                     cur = top = 0
-                tn, tb = trash_stat()
             elif ch == ord("u"):
                 if not undo:
                     msg = ("warn", "nothing to undo")
                 else:
                     m = restore_entry(undo.pop())
-                    chats = loader(); by = {c["uuid"]: c for c in chats}
-                    tn, tb = trash_stat()
+                    reload()
                     msg = (("ok", f"restored {fit(m.get('label') or '?', 40)}") if m
                            else ("warn", "could not restore"))
             elif ch == ord(" "):
@@ -843,8 +856,7 @@ def run_ui(loader, title, grouped):
                 if confirm_delete(sel):
                     for u in list(picked):
                         if u in by: undo.append(trash_chat(by[u]["dir"], u, by[u]["label"]))
-                    chats = loader(); by = {c["uuid"]: c for c in chats}
-                    tn, tb = trash_stat()
+                    reload()
                     n = len(sel)
                     picked = set()
                     msg = ("ok", f"trashed {plural(n)} · u undo · t trash")
@@ -953,8 +965,8 @@ def cmd_rm(args):
             if not hits: print(f"!! no chat matches '{tok}'"); continue
             if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {hits}"); continue
             jp = os.path.join(DIR, hits[0] + ".jsonl")
-            fresh = os.path.exists(jp) and (time.time() - os.path.getmtime(jp)) < LIVE_FRESH
-            if hits[0] in live or fresh:
+            mt = os.path.getmtime(jp) if os.path.exists(jp) else 0
+            if is_live(mt, hits[0], live, time.time()):
                 print(f"!! SKIP {hits[0]}: session is live"); continue
             plan.append((hits[0], None))
     if not plan:
@@ -985,7 +997,7 @@ def cmd_trash(args):
     if not ents: print("trash is empty"); return
     now = time.time()
     for e in ents:
-        left = max(0, TRASH_DAYS - int((now - e.get("at", 0)) / 86400))
+        left = days_left(e.get("at", 0), now)
         print(f"  {reltime(e.get('at', 0), now):>4} {human(e['_size']):>6}  {e['uuid'][:8]}  "
               f"{left}d left  {(e.get('label') or '')[:48]}")
     tot = sum(e["_size"] for e in ents)
