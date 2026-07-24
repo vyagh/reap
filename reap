@@ -44,7 +44,8 @@ TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
-CONTENT_MAX = 104              # a readable measure; don't smear the list across a 200-col terminal
+LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
+PANE_MIN = 42                  # ...but only when there's at least this much room for the pane
 LEAF_W = 24                    # pad the project leaf so group stats line up in a real column
 
 HELP_LINES = [
@@ -209,6 +210,7 @@ def load_chats(DIR):
             "uuid": uuid, "short": uuid.split("-")[0], "dir": DIR, "proj": proj, "path": jp,
             "label": title or prompt or "(empty)",
             "titled": bool(title),                       # else the label is just its first message
+            "first": prompt,                             # opening user message, for the detail pane
             "cwd": cwd,                                  # real path, so headers aren't dash-mangled
             "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
             "mt": mt, "rel": reltime(mt, now), "live": uuid in live or (now - mt) < LIVE_FRESH,
@@ -612,7 +614,11 @@ def run_ui(loader, title, grouped):
 
             total = sum(c["size"] for c in chats)
             psz = sum(by[u]["size"] for u in picked if u in by)
-            cw = min(w - 1, CONTENT_MAX)                 # readable measure, not the whole terminal
+            # split the terminal: a readable list on the left, a detail pane on the right when wide
+            pane = w >= LIST_W + PANE_MIN
+            cw = LIST_W if pane else w - 1               # list content width
+            px = cw + 3                                  # detail-pane left column
+            rw = w - 1                                   # rules span the whole frame
             add(0, 1, " reap ", SEL)
             add(0, 8, projlabel(title, max(8, cw - 40)), DIM)
             stats = f"{plural(len(chats))} · {human(total)}"
@@ -622,7 +628,7 @@ def run_ui(loader, title, grouped):
             if tn:                                       # disk parked in trash, never hide this
                 ti = f"trash {human(tb)}"
                 add(0, max(1, cw - len(stats) - len(badge) - len(ti) - 3), ti, YEL)
-            add(1, 0, RULE * cw, DIM)
+            add(1, 0, RULE * rw, DIM)
 
             def draw_hdr(y, it, sel=False):
                 shut = it[1] in folded
@@ -638,6 +644,41 @@ def run_ui(loader, title, grouped):
                 x = 3 + LEAF_W + 2
                 add(y, x, info.ljust(17), DIM)           # padded so stats form a column
                 if parent: add(y, x + 18, fit(parent, max(0, cw - x - 19)), DIM)
+
+            def draw_detail(it):
+                pw = w - px - 1
+                if pw < 20: return
+                def kv(yy, k, v, vattr=0):
+                    add(yy, px, k, DIM)
+                    lines = textwrap.wrap(str(v), max(4, pw - 11)) or [""]
+                    for i, ln in enumerate(lines): add(yy + i, px + 11, ln, vattr)
+                    return yy + len(lines)
+                if it[0] == "hdr":                        # cursor parked on a folded group
+                    leaf, parent = split_path(it[3] if len(it) > 3 else None, it[1])
+                    add(2, px, fit(leaf, pw), ACC | curses.A_BOLD)
+                    yy = kv(4, "path", (parent + "/" + leaf) if parent else leaf)
+                    yy = kv(yy, "chats", str(it[2][0]))
+                    yy = kv(yy, "size", human(it[2][1]))
+                    add(yy + 1, px, "folded · z to open", DIM); return
+                c = it[1]
+                add(2, px, fit(c["label"] if c["titled"] else "untitled", pw),
+                    curses.A_BOLD if c["titled"] else DIM)
+                full = c["cwd"] or ""
+                if full.startswith(HOME): full = "~" + full[len(HOME):]
+                yy = 4
+                if full: yy = kv(yy, "path", full)
+                yy = kv(yy, "size", human(c["size"]), YEL if c["size"] >= (10 << 20) else 0)
+                yy = kv(yy, "messages", str(c["msgs"]))
+                when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
+                yy = kv(yy, "modified", f"{when} · {c['rel']} ago")
+                yy = kv(yy, "id", c["short"])
+                yy = kv(yy, "status", "● live" if c["live"] else "idle", OK if c["live"] else DIM)
+                if c.get("first"):
+                    yy += 1
+                    add(yy, px, "opening message", DIM); yy += 1
+                    for ln in (textwrap.wrap(c["first"], pw) or [])[:max(0, h - 4 - yy)]:
+                        add(yy, px, ln); yy += 1
+                add(h - 3, px, "p peek   space pick   d delete", DIM)
 
             if not vis:
                 add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
@@ -684,9 +725,15 @@ def run_ui(loader, title, grouped):
                     add(y, x, lbl, tattr)
                 x += len(lbl)
                 if c["live"]: add(y, x, "  ● live", OK)
-            scrollbar(base, body, top, len(items), cw)
+            if pane:                                     # divider (doubles as scroll track) + detail
+                for j in range(body): add(2 + j, cw + 1, "│", DIM)
+                if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
+                    draw_detail(items[cur])
+                scrollbar(base, body, top, len(items), cw + 1)
+            else:
+                scrollbar(base, body, top, len(items), cw)
 
-            add(h - 2, 0, RULE * cw, DIM)
+            add(h - 2, 0, RULE * rw, DIM)
             if filtering:
                 add(h - 1, 1, "/", ACC | curses.A_BOLD)
                 add(h - 1, 2, flt, curses.A_BOLD)
