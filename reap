@@ -44,6 +44,8 @@ TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
+CONTENT_MAX = 104              # a readable measure; don't smear the list across a 200-col terminal
+LEAF_W = 24                    # pad the project leaf so group stats line up in a real column
 
 HELP_LINES = [
     ("H", "move"),
@@ -390,20 +392,33 @@ def run_ui(loader, title, grouped):
         curses.curs_set(0)
         curses.use_default_colors()
 
-        def pair(i, fg):
+        def pair(i, fg, bg=-1):
             try:
-                curses.init_pair(i, fg, -1); return curses.color_pair(i)
+                curses.init_pair(i, fg, bg); return curses.color_pair(i)
             except Exception:
                 return 0
-        COL = {"planner": pair(1, curses.COLOR_CYAN), "worker": pair(2, curses.COLOR_GREEN),
-               "reviewer": pair(3, curses.COLOR_YELLOW), "thinker": pair(4, curses.COLOR_MAGENTA)}
-        OK = pair(5, curses.COLOR_GREEN) | curses.A_BOLD
-        YEL = pair(6, curses.COLOR_YELLOW)
+        if curses.COLORS >= 256:
+            # muted xterm-256 palette, picked to stay legible on BOTH light and dark terminals.
+            # A_DIM renders inconsistently across emulators; a real grey is predictable.
+            COL = {"planner": pair(1, 67), "worker": pair(2, 71),
+                   "reviewer": pair(3, 137), "thinker": pair(4, 97)}
+            OK = pair(5, 71) | curses.A_BOLD
+            YEL = pair(6, 136)
+            DANGER = pair(7, 131) | curses.A_BOLD
+            ACC = pair(8, 67)
+            DIM = pair(9, 245)
+            # explicit fg AND bg, so the cursor row looks right whatever the theme
+            SEL = pair(10, 231, 60) | curses.A_BOLD
+        else:
+            COL = {"planner": pair(1, curses.COLOR_CYAN), "worker": pair(2, curses.COLOR_GREEN),
+                   "reviewer": pair(3, curses.COLOR_YELLOW), "thinker": pair(4, curses.COLOR_MAGENTA)}
+            OK = pair(5, curses.COLOR_GREEN) | curses.A_BOLD
+            YEL = pair(6, curses.COLOR_YELLOW)
+            DANGER = pair(7, curses.COLOR_RED) | curses.A_BOLD
+            ACC = pair(8, curses.COLOR_CYAN)
+            DIM = curses.A_DIM
+            SEL = curses.A_REVERSE | curses.A_BOLD
         WARN = YEL | curses.A_BOLD
-        DANGER = pair(7, curses.COLOR_RED) | curses.A_BOLD
-        ACC = pair(8, curses.COLOR_CYAN)
-        SEL = curses.A_REVERSE | curses.A_BOLD          # cursor row: theme-adaptive, high-contrast
-        DIM = curses.A_DIM
 
         chats = loader()
         by = {c["uuid"]: c for c in chats}
@@ -418,10 +433,11 @@ def run_ui(loader, title, grouped):
             try: stdscr.addstr(y, x, s[:max(0, w - 1 - x)], attr)
             except curses.error: pass
 
-        def edge(y, ch, attr=0):                         # write in the last column (add() clips it)
+        def edge(y, ch, attr=0, col=None):               # add() clips the last column, so write direct
             h, w = stdscr.getmaxyx()
+            x = (w - 1) if col is None else min(col, w - 1)
             if 0 <= y < h - 1:
-                try: stdscr.addstr(y, w - 1, ch, attr)
+                try: stdscr.addstr(y, x, ch, attr)
                 except curses.error: pass
 
         def box(y0, x0, hh, ww, ttl="", tattr=curses.A_BOLD):
@@ -431,10 +447,10 @@ def run_ui(loader, title, grouped):
             add(y0 + hh - 1, x0, "└" + RULE * (ww - 2) + "┘", DIM)
             if ttl: add(y0, x0 + 2, f" {ttl} ", tattr)
 
-        def scrollbar(y0, page, off, n):
+        def scrollbar(y0, page, off, n, col=None):
             if n <= page or page < 2: return
-            for j in range(page): edge(y0 + j, "│", DIM)
-            edge(y0 + int((page - 1) * off / (n - page)), "┃", ACC | curses.A_BOLD)
+            for j in range(page): edge(y0 + j, "│", DIM, col)
+            edge(y0 + int((page - 1) * off / (n - page)), "┃", ACC | curses.A_BOLD, col)
 
         def do_help():
             h, w = stdscr.getmaxyx()
@@ -596,33 +612,32 @@ def run_ui(loader, title, grouped):
 
             total = sum(c["size"] for c in chats)
             psz = sum(by[u]["size"] for u in picked if u in by)
-            add(0, 1, " reap ", curses.A_REVERSE | curses.A_BOLD)
-            add(0, 8, projlabel(title, w - 40), DIM)
+            cw = min(w - 1, CONTENT_MAX)                 # readable measure, not the whole terminal
+            add(0, 1, " reap ", SEL)
+            add(0, 8, projlabel(title, max(8, cw - 40)), DIM)
             stats = f"{plural(len(chats))} · {human(total)}"
             badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
-            add(0, max(1, w - len(stats) - len(badge) - 2), stats, DIM)
-            if badge: add(0, max(1, w - len(badge) - 1), badge, ACC | curses.A_BOLD)
+            add(0, max(1, cw - len(stats) - len(badge)), stats, DIM)
+            if badge: add(0, max(1, cw - len(badge) + 1), badge, ACC | curses.A_BOLD)
             if tn:                                       # disk parked in trash, never hide this
                 ti = f"trash {human(tb)}"
-                add(0, max(1, w - len(stats) - len(badge) - len(ti) - 5), ti, YEL)
-            add(1, 0, RULE * (w - 1), DIM)
+                add(0, max(1, cw - len(stats) - len(badge) - len(ti) - 3), ti, YEL)
+            add(1, 0, RULE * cw, DIM)
 
             def draw_hdr(y, it, sel=False):
                 shut = it[1] in folded
                 leaf, parent = split_path(it[3] if len(it) > 3 else None,
                                           projlabel(it[1], PROJ_MAX))
-                leaf = fit(leaf, 34)
+                leaf = fit(leaf, LEAF_W)
                 info = f"{plural(it[2][0])} · {human(it[2][1])}"
                 if sel:                                  # cursor is parked on a folded group
-                    add(y, 0, f" {'▸' if shut else '▾'} {leaf}   {info}".ljust(w - 1), SEL)
+                    add(y, 0, f" ▸ {leaf.ljust(LEAF_W)}  {info}".ljust(cw), SEL)
                     return
                 add(y, 1, "▸" if shut else BAR, ACC | curses.A_BOLD)
-                add(y, 3, leaf, curses.A_BOLD)
-                x = 3 + len(leaf) + 3
-                add(y, x, info, DIM)
-                if parent:                               # real path, parked at the right edge
-                    pp = fit(parent, 40)
-                    add(y, max(x + len(info) + 3, w - len(pp) - 3), pp, DIM)
+                add(y, 3, leaf.ljust(LEAF_W), curses.A_BOLD)
+                x = 3 + LEAF_W + 2
+                add(y, x, info.ljust(17), DIM)           # padded so stats form a column
+                if parent: add(y, x + 18, fit(parent, max(0, cw - x - 19)), DIM)
 
             if not vis:
                 add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
@@ -644,8 +659,8 @@ def run_ui(loader, title, grouped):
                 live = "  ● live" if c["live"] else ""
                 if idx == cur:
                     pre = f" {ind}{mark} {c['rel']:>3} {human(c['size']):>6}  "
-                    lbl = fit(c["label"], max(0, min(LABEL_MAX, w - 1 - len(pre) - len(live))))
-                    add(y, 0, (pre + lbl + live).ljust(w - 1), SEL)
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - len(pre) - len(live))))
+                    add(y, 0, (pre + lbl + live).ljust(cw), SEL)
                     continue
                 add(y, 0, " " + ind); x = 1 + len(ind)
                 add(y, x, mark, OK if on else DIM); x += 1
@@ -659,7 +674,7 @@ def run_ui(loader, title, grouped):
                 elif not c["titled"]: tattr = DIM        # unnamed: this is its first message
                 elif r == "stale": tattr = DIM
                 else: tattr = COL.get(r, 0)
-                lbl = fit(c["label"], max(0, min(LABEL_MAX, w - 1 - x - len(live))))
+                lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(live))))
                 p = lbl.lower().find(f) if flt else -1
                 if p >= 0:                               # underline the filter match
                     add(y, x, lbl[:p], tattr)
@@ -669,15 +684,15 @@ def run_ui(loader, title, grouped):
                     add(y, x, lbl, tattr)
                 x += len(lbl)
                 if c["live"]: add(y, x, "  ● live", OK)
-            scrollbar(base, body, top, len(items))
+            scrollbar(base, body, top, len(items), cw)
 
-            add(h - 2, 0, RULE * (w - 1), DIM)
+            add(h - 2, 0, RULE * cw, DIM)
             if filtering:
                 add(h - 1, 1, "/", ACC | curses.A_BOLD)
                 add(h - 1, 2, flt, curses.A_BOLD)
                 add(h - 1, 2 + len(flt), "▏", DIM)
                 mtxt = f"{len(vis)} match{'es' if len(vis) != 1 else ''} · enter keep · esc clear"
-                add(h - 1, max(1, w - len(mtxt) - 2), mtxt, DIM)
+                add(h - 1, max(1, cw - len(mtxt)), mtxt, DIM)
             elif msg:
                 add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
             else:
@@ -690,7 +705,7 @@ def run_ui(loader, title, grouped):
                     add(h - 1, x, act, DIM); x += len(act) + 3
                 if picked:
                     ptxt = f"{PICK_ON} {len(picked)} picked · {human(psz)}"
-                    add(h - 1, max(1, w - len(ptxt) - 2), ptxt, OK)
+                    add(h - 1, max(1, cw - len(ptxt)), ptxt, OK)
             stdscr.refresh()
 
             ch = stdscr.getch()
