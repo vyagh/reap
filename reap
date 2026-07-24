@@ -170,8 +170,9 @@ def meta(path):
     except OSError: pass
     return title, prompt, cwd, n
 
-def peek_turns(path, cap=250):
-    """Read a transcript into a list of (who, text) message turns. Read-only."""
+def peek_turns(path, cap=250, text_only=False):
+    """Read a transcript into a list of (who, text) message turns. Read-only.
+    text_only skips tool calls/results: a clean human/assistant read for the preview."""
     out = []
     try:
         with open(path) as fh:
@@ -187,6 +188,7 @@ def peek_turns(path, cap=250):
                     for b in c:
                         if not isinstance(b, dict): continue
                         if b.get("type") == "text": parts.append(b.get("text", ""))
+                        elif text_only: continue
                         elif b.get("type") == "tool_use": parts.append(f"[tool: {b.get('name', '?')}]")
                         elif b.get("type") == "tool_result": parts.append("[tool result]")
                 text = " ".join(s for s in parts if s).strip()
@@ -210,7 +212,6 @@ def load_chats(DIR):
             "uuid": uuid, "short": uuid.split("-")[0], "dir": DIR, "proj": proj, "path": jp,
             "label": title or prompt or "(empty)",
             "titled": bool(title),                       # else the label is just its first message
-            "first": prompt,                             # opening user message, for the detail pane
             "cwd": cwd,                                  # real path, so headers aren't dash-mangled
             "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
             "mt": mt, "rel": reltime(mt, now), "live": uuid in live or (now - mt) < LIVE_FRESH,
@@ -428,6 +429,7 @@ def run_ui(loader, title, grouped):
         undo = []                                        # trash dirs from this session's deletes
         tn, tb = trash_stat()                            # cached; refreshed only on change
         folded = set()                                   # collapsed project groups
+        pcache = {}                                       # uuid -> preview turns (lazy, cached)
 
         def add(y, x, s, attr=0):
             h, w = stdscr.getmaxyx()
@@ -665,20 +667,26 @@ def run_ui(loader, title, grouped):
                     curses.A_BOLD if c["titled"] else DIM)
                 full = c["cwd"] or ""
                 if full.startswith(HOME): full = "~" + full[len(HOME):]
-                yy = 4
-                if full: yy = kv(yy, "path", full)
-                yy = kv(yy, "size", human(c["size"]), YEL if c["size"] >= (10 << 20) else 0)
-                yy = kv(yy, "messages", str(c["msgs"]))
+                if full: add(3, px, fit(full, pw), DIM)
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
-                yy = kv(yy, "modified", f"{when} · {c['rel']} ago")
-                yy = kv(yy, "id", c["short"])
-                yy = kv(yy, "status", "● live" if c["live"] else "idle", OK if c["live"] else DIM)
-                if c.get("first"):
-                    yy += 1
-                    add(yy, px, "opening message", DIM); yy += 1
-                    for ln in (textwrap.wrap(c["first"], pw) or [])[:max(0, h - 4 - yy)]:
-                        add(yy, px, ln); yy += 1
-                add(h - 3, px, "p peek   space pick   d delete", DIM)
+                bits = f"{human(c['size'])} · {plural(c['msgs'], 'msg')} · {when}"
+                add(5, px, fit(bits, pw), YEL if c["size"] >= (10 << 20) else DIM)
+                if c["live"] and len(bits) + 8 < pw: add(5, px + len(bits) + 1, "● live", OK)
+                add(6, px, RULE * pw, DIM)
+                turns = pcache.get(c["uuid"])            # lazy + cached: smooth to hold j
+                if turns is None:
+                    turns = pcache[c["uuid"]] = peek_turns(c["path"], cap=16, text_only=True)
+                ty = 8
+                if not turns: add(ty, px, "(no readable messages)", DIM)
+                for who, text in turns:
+                    if ty >= h - 3: break
+                    add(ty, px, BAR + " " + who, OK if who == "you" else ACC | curses.A_BOLD)
+                    ty += 1
+                    for ln in (textwrap.wrap(text, pw - 2) or [""])[:5]:
+                        if ty >= h - 3: break
+                        add(ty, px + 2, ln, DIM); ty += 1
+                    ty += 1
+                add(h - 3, px, "p full · space pick · d delete", DIM)
 
             if not vis:
                 add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
