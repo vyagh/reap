@@ -49,6 +49,7 @@ HELP_LINES = [
     ("H", "move"),
     ("", "  ↑/↓  j/k       line            PgUp/PgDn   page"),
     ("", "  g / G          top / bottom    [ / ]       prev / next workspace"),
+    ("", "  z / Z          fold this group / fold all"),
     ("", ""),
     ("H", "select & act"),
     ("", "  space          toggle pick (skips live sessions)"),
@@ -139,17 +140,19 @@ def meta(path):
     # and they live in the header. json.loads is the launch hotspot, so cheaply
     # reject lines that can't carry either before parsing: title/prompt/count
     # stay byte-identical to a full parse.
-    title = prompt = None
+    title = prompt = cwd = None
     n = 0
     try:
         with open(path) as fh:
             for line in fh:
                 n += 1
                 is_title = '"custom-title"' in line or '"agent-name"' in line
-                if not is_title and (prompt is not None or '"type":"user"' not in line):
+                want_cwd = cwd is None and '"cwd"' in line   # real path, ~1 extra parse per file
+                if not is_title and not want_cwd and (prompt is not None or '"type":"user"' not in line):
                     continue
                 try: o = json.loads(line)
                 except Exception: continue
+                if cwd is None and o.get("cwd"): cwd = o["cwd"]
                 t = o.get("type")
                 if t == "custom-title" and o.get("customTitle"): title = o["customTitle"]
                 elif t == "agent-name" and o.get("agentName") and not title: title = o["agentName"]
@@ -162,7 +165,7 @@ def meta(path):
                         if c and not c.startswith(("<local-command", "<command-", "Caveat:")):
                             prompt = " ".join(c.split())
     except OSError: pass
-    return title, prompt, n
+    return title, prompt, cwd, n
 
 def peek_turns(path, cap=250):
     """Read a transcript into a list of (who, text) message turns. Read-only."""
@@ -198,12 +201,13 @@ def load_chats(DIR):
     for jp in glob.glob(os.path.join(DIR, "*.jsonl")):
         uuid = os.path.basename(jp)[:-6]
         sd = os.path.join(DIR, uuid)
-        title, prompt, n = meta(jp)
+        title, prompt, cwd, n = meta(jp)
         mt = os.path.getmtime(jp)
         chats.append({
             "uuid": uuid, "short": uuid.split("-")[0], "dir": DIR, "proj": proj, "path": jp,
             "label": title or prompt or "(empty)",
             "titled": bool(title),                       # else the label is just its first message
+            "cwd": cwd,                                  # real path, so headers aren't dash-mangled
             "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
             "mt": mt, "rel": reltime(mt, now), "live": uuid in live or (now - mt) < LIVE_FRESH,
         })
@@ -318,6 +322,17 @@ def role(label):
 def projlabel(p, wdt):
     return p if len(p) <= wdt else "…" + p[-(wdt - 1):]
 
+def plural(n, w="chat"):
+    return f"{n} {w}" + ("" if n == 1 else "s")
+
+def split_path(cwd, fallback):
+    """(leaf, parent) from a real cwd: the leaf is what you actually call the project."""
+    if not cwd: return fallback, ""
+    p = ("~" + cwd[len(HOME):]) if cwd.startswith(HOME) else cwd
+    p = p.rstrip("/")
+    leaf = os.path.basename(p)
+    return (leaf or p), (os.path.dirname(p) if leaf else "")
+
 def fit(s, width):
     if width <= 0: return ""
     return s if len(s) <= width else s[:max(0, width - 1)] + "…"
@@ -395,6 +410,7 @@ def run_ui(loader, title, grouped):
         picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, None, "recency"
         undo = []                                        # trash dirs from this session's deletes
         tn, tb = trash_stat()                            # cached; refreshed only on change
+        folded = set()                                   # collapsed project groups
 
         def add(y, x, s, attr=0):
             h, w = stdscr.getmaxyx()
@@ -486,7 +502,7 @@ def run_ui(loader, title, grouped):
             hh = shown + (1 if more else 0) + 5
             y0, x0 = max(0, (h - hh) // 2), max(0, (w - ww) // 2)
             n = len(sel)
-            box(y0, x0, hh, ww, f"delete {n} chat{'s' if n != 1 else ''} · {freed}", curses.A_BOLD)
+            box(y0, x0, hh, ww, f"delete {plural(n)} · {freed}", curses.A_BOLD)
             for j in range(shown):
                 c = sel[j]
                 add(y0 + 2 + j, x0 + 3, f"{human(c['size']):>6}", DIM)
@@ -504,7 +520,7 @@ def run_ui(loader, title, grouped):
                 stdscr.erase()
                 h, w = stdscr.getmaxyx()
                 add(0, 1, " trash ", curses.A_REVERSE | curses.A_BOLD)
-                info = f"{len(ents)} chats · {human(sum(e['_size'] for e in ents))} · kept {TRASH_DAYS}d"
+                info = f"{plural(len(ents))} · {human(sum(e['_size'] for e in ents))} · kept {TRASH_DAYS}d"
                 add(0, max(1, w - len(info) - 2), info, DIM)
                 add(1, 0, RULE * (w - 1), DIM)
                 page = max(1, h - 4)
@@ -538,7 +554,7 @@ def run_ui(loader, title, grouped):
                         ch_reload = 1; ents = trash_list()
                 elif ents and k == ord("E"):
                     freed = human(sum(e["_size"] for e in ents))
-                    if confirm_ask(f"empty trash, {len(ents)} chats, {freed}, forever?",
+                    if confirm_ask(f"empty trash: {plural(len(ents))}, {freed}, forever?",
                                    "frees the disk · gone for good · other cancels"):
                         for e in ents: shutil.rmtree(e["_dir"], ignore_errors=True)
                         ch_reload = 1; ents = trash_list()
@@ -553,19 +569,23 @@ def run_ui(loader, title, grouped):
 
             items = []                                   # gap + header + chat rows
             if grouped:
-                stat = {}
+                stat, cwds = {}, {}
                 for c in vis:
                     s = stat.setdefault(c["proj"], [0, 0]); s[0] += 1; s[1] += c["size"]
+                    if c.get("cwd"): cwds.setdefault(c["proj"], c["cwd"])
                 last = None
                 for c in vis:
                     if c["proj"] != last:
                         if last is not None: items.append(("gap",))   # blank line between sections
-                        last = c["proj"]; items.append(("hdr", c["proj"], stat[c["proj"]]))
-                    items.append(("chat", c))
+                        last = c["proj"]
+                        items.append(("hdr", c["proj"], stat[c["proj"]], cwds.get(c["proj"])))
+                    if c["proj"] not in folded: items.append(("chat", c))
             else:
                 items = [("chat", c) for c in vis]
 
-            ci = [i for i, it in enumerate(items) if it[0] == "chat"]
+            # a folded header is navigable, so you can still reach and reopen it
+            ci = [i for i, it in enumerate(items)
+                  if it[0] == "chat" or (it[0] == "hdr" and it[1] in folded)]
             if not ci:
                 cur = 0
             elif cur >= len(items) or items[cur][0] != "chat":
@@ -578,7 +598,7 @@ def run_ui(loader, title, grouped):
             psz = sum(by[u]["size"] for u in picked if u in by)
             add(0, 1, " reap ", curses.A_REVERSE | curses.A_BOLD)
             add(0, 8, projlabel(title, w - 40), DIM)
-            stats = f"{len(chats)} chats · {human(total)}"
+            stats = f"{plural(len(chats))} · {human(total)}"
             badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
             add(0, max(1, w - len(stats) - len(badge) - 2), stats, DIM)
             if badge: add(0, max(1, w - len(badge) - 1), badge, ACC | curses.A_BOLD)
@@ -587,11 +607,22 @@ def run_ui(loader, title, grouped):
                 add(0, max(1, w - len(stats) - len(badge) - len(ti) - 5), ti, YEL)
             add(1, 0, RULE * (w - 1), DIM)
 
-            def draw_hdr(y, it):
-                name = projlabel(it[1], min(PROJ_MAX, max(8, w - 30)))
-                add(y, 1, BAR, ACC | curses.A_BOLD)
-                add(y, 3, name, curses.A_BOLD)
-                add(y, 5 + len(name), f"{it[2][0]} chats · {human(it[2][1])}", DIM)
+            def draw_hdr(y, it, sel=False):
+                shut = it[1] in folded
+                leaf, parent = split_path(it[3] if len(it) > 3 else None,
+                                          projlabel(it[1], PROJ_MAX))
+                leaf = fit(leaf, 34)
+                info = f"{plural(it[2][0])} · {human(it[2][1])}"
+                if sel:                                  # cursor is parked on a folded group
+                    add(y, 0, f" {'▸' if shut else '▾'} {leaf}   {info}".ljust(w - 1), SEL)
+                    return
+                add(y, 1, "▸" if shut else BAR, ACC | curses.A_BOLD)
+                add(y, 3, leaf, curses.A_BOLD)
+                x = 3 + len(leaf) + 3
+                add(y, x, info, DIM)
+                if parent:                               # real path, parked at the right edge
+                    pp = fit(parent, 40)
+                    add(y, max(x + len(info) + 3, w - len(pp) - 3), pp, DIM)
 
             if not vis:
                 add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
@@ -605,7 +636,7 @@ def run_ui(loader, title, grouped):
                 if it[0] == "gap":
                     continue
                 if it[0] == "hdr":
-                    draw_hdr(y, it); continue
+                    draw_hdr(y, it, sel=(idx == cur)); continue
                 c = it[1]
                 on = c["uuid"] in picked
                 mark = PICK_ON if on else PICK_OFF
@@ -652,7 +683,7 @@ def run_ui(loader, title, grouped):
             else:
                 x = 1
                 hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete"),
-                         ("t", "trash"), ("/", "filter"), ("q", "quit")]
+                         ("z", "fold"), ("t", "trash"), ("/", "filter"), ("q", "quit")]
                 if undo: hints.insert(4, ("u", "undo"))
                 for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
@@ -696,6 +727,14 @@ def run_ui(loader, title, grouped):
                 else:
                     prv = [i for i in hd if gh is not None and i < gh]
                     if prv: cur = prv[-1] + 1
+            elif grouped and ch in (ord("z"), curses.KEY_LEFT, curses.KEY_RIGHT):
+                gp = next((items[i][1] for i in range(min(cur, len(items) - 1), -1, -1)
+                           if items[i][0] == "hdr"), None)
+                if gp: folded.discard(gp) if gp in folded else folded.add(gp)
+            elif grouped and ch == ord("Z"):
+                allp = {c["proj"] for c in vis}
+                folded.clear() if folded >= allp else folded.update(allp)
+                cur = top = 0
             elif ch == ord("/"): filtering = True; flt = ""
             elif ch == ord("c"): picked.clear()
             elif ch == ord("a"):                         # toggle: all shown picked -> unpick them
@@ -738,7 +777,7 @@ def run_ui(loader, title, grouped):
                     tn, tb = trash_stat()
                     n = len(sel)
                     picked = set()
-                    msg = ("ok", f"trashed {n} chat{'s' if n != 1 else ''} · u undo · t trash")
+                    msg = ("ok", f"trashed {plural(n)} · u undo · t trash")
                 else:
                     msg = ("warn", "cancelled")
 
@@ -880,7 +919,7 @@ def cmd_trash(args):
         print(f"  {reltime(e.get('at', 0), now):>4} {human(e['_size']):>6}  {e['uuid'][:8]}  "
               f"{left}d left  {(e.get('label') or '')[:48]}")
     tot = sum(e["_size"] for e in ents)
-    print(f"\n{len(ents)} chats · {human(tot)} still on disk (frees after {TRASH_DAYS}d or --empty)")
+    print(f"\n{plural(len(ents))} · {human(tot)} still on disk (frees after {TRASH_DAYS}d or --empty)")
     print("restore: reap restore <id|name>")
 
 def cmd_restore(args):
