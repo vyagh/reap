@@ -72,6 +72,12 @@ HELP_LINES = [
     ("D", "delete moves the chat to a trash, recoverable for 7 days."),
 ]
 
+def under_proj(d):
+    """A project dir must be a real directory sitting directly inside PROJ, reject a
+    symlink pointing out of the tree, so reap can never read/delete through it."""
+    rp = os.path.realpath(d)
+    return os.path.isdir(rp) and os.path.dirname(rp) == os.path.realpath(PROJ)
+
 def resolve_dir(arg):
     if not arg:
         return os.path.join(PROJ, os.path.abspath(os.getcwd()).replace("/", "-"))
@@ -79,7 +85,7 @@ def resolve_dir(arg):
         ap = os.path.abspath(arg)
         return ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, ap.replace("/", "-"))
     cands = sorted(d for d in glob.glob(os.path.join(PROJ, "*"))
-                   if os.path.isdir(d) and arg in os.path.basename(d))
+                   if under_proj(d) and arg in os.path.basename(d))
     if len(cands) > 1:                                    # tie-break: prefer an exact leaf match
         exact = [d for d in cands if os.path.basename(d).endswith(arg)]
         if len(exact) == 1: cands = exact
@@ -92,6 +98,12 @@ def pretty(DIR):
     prefix = "-" + HOME.strip("/").replace("/", "-")   # e.g. -home-alice
     if name.startswith(prefix): name = name[len(prefix):]
     return name.lstrip("-") or os.path.basename(DIR)
+
+_CTRL = {c: None for c in range(0x20)}; _CTRL[0x7f] = None
+def clean(s):
+    """Strip C0 control chars (ESC/BEL/…) so transcript text can't inject terminal
+    escape sequences when printed. Whitespace is already normalized by the caller."""
+    return s.translate(_CTRL)
 
 def read_json(path, tries=3):
     """Read JSON, retrying briefly: roster/session files can be caught mid-write,
@@ -170,8 +182,8 @@ def meta(path):
                 except Exception: continue
                 if cwd is None and o.get("cwd"): cwd = o["cwd"]
                 t = o.get("type")
-                if t == "custom-title" and o.get("customTitle"): title = o["customTitle"]
-                elif t == "agent-name" and o.get("agentName") and not title: title = o["agentName"]
+                if t == "custom-title" and o.get("customTitle"): title = clean(o["customTitle"])
+                elif t == "agent-name" and o.get("agentName") and not title: title = clean(o["agentName"])
                 elif prompt is None and t == "user" and not o.get("isMeta"):
                     c = o.get("message", {}).get("content")
                     if isinstance(c, list):
@@ -179,7 +191,7 @@ def meta(path):
                     if isinstance(c, str):
                         c = c.strip()
                         if c and not c.startswith(("<local-command", "<command-", "Caveat:")):
-                            prompt = " ".join(c.split())
+                            prompt = clean(" ".join(c.split()))
     except OSError: pass
     return title, prompt, cwd, n
 
@@ -206,7 +218,7 @@ def peek_turns(path, cap=250, text_only=False):
                         elif b.get("type") == "tool_result": parts.append("[tool result]")
                 text = " ".join(s for s in parts if s).strip()
                 if not text or text.startswith(("<local-command", "<command-", "Caveat:")): continue
-                out.append(("you" if o["type"] == "user" else "claude", " ".join(text.split())))
+                out.append(("you" if o["type"] == "user" else "claude", clean(" ".join(text.split()))))
                 if len(out) >= cap: break
     except OSError: pass
     return out
@@ -237,7 +249,7 @@ def load_all(tmp=False):
     want to keep lives there, and their uuid-laden paths swamp the group headers."""
     chats = []
     for d in sorted(glob.glob(os.path.join(PROJ, "*"))):
-        if not os.path.isdir(d): continue
+        if not under_proj(d): continue
         if not tmp and os.path.basename(d).startswith("-tmp-"): continue
         chats += load_chats(d)
     recent = {}
@@ -260,9 +272,10 @@ def resumer_job_dirs(uuid):
     return out
 
 def chat_artifacts(DIR, uuid):
-    return [os.path.join(DIR, uuid + ".jsonl"),
-            os.path.join(DIR, uuid),
-            os.path.join(HOME, ".claude", "jobs", uuid.split("-")[0])] + resumer_job_dirs(uuid)
+    arts = [os.path.join(DIR, uuid + ".jsonl"), os.path.join(DIR, uuid)]
+    short = uuid.split("-")[0]                            # empty short would collapse to the whole
+    if short: arts.append(os.path.join(HOME, ".claude", "jobs", short))   # jobs/ dir, guard it
+    return arts + resumer_job_dirs(uuid)
 
 def delete_chat(DIR, uuid):                              # hard, irreversible
     for p in chat_artifacts(DIR, uuid):
@@ -288,10 +301,16 @@ def trash_chat(DIR, uuid, label=""):
     return trash_move(uuid, chat_artifacts(DIR, uuid), label, DIR)
 
 def restore_entry(d):
-    """Move a trash entry's artifacts back to their original paths; drop the entry."""
+    """Move a trash entry's artifacts back to their original paths; drop the entry.
+    Validates the (possibly tampered) manifest: base must be a bare name inside the entry,
+    and src must land back under a directory reap owns, never an arbitrary path."""
+    roots = (os.path.realpath(PROJ), os.path.realpath(os.path.join(HOME, ".claude", "jobs")))
     meta = read_json(os.path.join(d, "reap-meta.json"))
     if not isinstance(meta, dict): return None
     for src, base in meta.get("moved", []):
+        if not isinstance(src, str) or base != os.path.basename(base): continue
+        rp = os.path.realpath(src)
+        if not any(rp == r or rp.startswith(r + os.sep) for r in roots): continue
         s = os.path.join(d, base)
         if os.path.exists(s) and not os.path.exists(src):
             os.makedirs(os.path.dirname(src), exist_ok=True)
