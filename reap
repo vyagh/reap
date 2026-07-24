@@ -35,7 +35,7 @@ Picker keys (press ? inside for this list):
 import json, os, sys, glob, time, shutil, textwrap
 from collections import Counter
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
