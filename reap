@@ -112,15 +112,25 @@ def is_live(mt, uuid, live, now):
 def days_left(at, now):
     return max(0, TRASH_DAYS - int((now - at) / 86400))
 
+def proc_dead(pid):
+    """True only when we can positively confirm the pid is gone: an exited session.
+    Anything uncertain (no pid, permission error) stays 'alive' so the guard errs safe."""
+    if not isinstance(pid, int): return False
+    try: os.kill(pid, 0)
+    except ProcessLookupError: return True
+    except Exception: pass
+    return False
+
 def live_session_ids():
+    # A session/worker whose pid is dead is a stale file, not a live session. Don't protect it.
     ids = set()
     for p in glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json")):
         o = read_json(p)
-        if isinstance(o, dict): ids.add(o.get("sessionId"))
+        if isinstance(o, dict) and not proc_dead(o.get("pid")): ids.add(o.get("sessionId"))
     r = read_json(os.path.join(HOME, ".claude", "daemon", "roster.json"))
     if isinstance(r, dict):
         for w in r.get("workers", {}).values():
-            if isinstance(w, dict): ids.add(w.get("sessionId"))
+            if isinstance(w, dict) and not proc_dead(w.get("pid")): ids.add(w.get("sessionId"))
     return {i for i in ids if i}
 
 def dirsize(p):
