@@ -39,7 +39,6 @@ __version__ = "0.2.0"
 
 HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
-LIVE_FRESH = 60   # secs: a transcript touched this recently counts as live (roster-lag backstop)
 TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
@@ -104,10 +103,6 @@ def read_json(path, tries=3):
         except (ValueError, OSError):
             if i + 1 < tries: time.sleep(0.03)
     return None
-
-def is_live(mt, uuid, live, now):
-    """One policy for 'don't touch this': in the roster/sessions, or touched < LIVE_FRESH ago."""
-    return uuid in live or (now - mt) < LIVE_FRESH
 
 def days_left(at, now):
     return max(0, TRASH_DAYS - int((now - at) / 86400))
@@ -232,7 +227,7 @@ def load_chats(DIR):
             "titled": bool(title),                       # else the label is just its first message
             "cwd": cwd,                                  # real path, so headers aren't dash-mangled
             "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
-            "mt": mt, "rel": reltime(mt, now), "live": is_live(mt, uuid, live, now),
+            "mt": mt, "rel": reltime(mt, now), "live": uuid in live,
         })
     chats.sort(key=lambda c: c["mt"], reverse=True)
     return chats
@@ -974,9 +969,7 @@ def cmd_rm(args):
                     if os.path.basename(p).startswith(tok)]
             if not hits: print(f"!! no chat matches '{tok}'"); continue
             if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {hits}"); continue
-            jp = os.path.join(DIR, hits[0] + ".jsonl")
-            mt = os.path.getmtime(jp) if os.path.exists(jp) else 0
-            if is_live(mt, hits[0], live, time.time()):
+            if hits[0] in live:
                 print(f"!! SKIP {hits[0]}: session is live"); continue
             plan.append((hits[0], None))
     if not plan:
