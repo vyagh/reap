@@ -32,7 +32,7 @@ Picker keys (press ? inside for this list):
   u undo last delete   t trash browser (restore / purge)
   s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
 """
-import json, os, sys, glob, time, shutil, textwrap
+import json, os, re, sys, glob, time, shutil, textwrap
 from collections import Counter
 
 __version__ = "0.3.0"
@@ -78,12 +78,17 @@ def under_proj(d):
     rp = os.path.realpath(d)
     return os.path.isdir(rp) and os.path.dirname(rp) == os.path.realpath(PROJ)
 
+def dirname_for(path):
+    """Claude Code's own cwd->project-dir mapping: every non-alnum char becomes '-'
+    (not just '/': a dot or underscore in the path needs this too, e.g. 'my.app')."""
+    return re.sub(r"[^a-zA-Z0-9]", "-", path)
+
 def resolve_dir(arg):
     if not arg:
-        return os.path.join(PROJ, os.path.abspath(os.getcwd()).replace("/", "-"))
+        return os.path.join(PROJ, dirname_for(os.path.abspath(os.getcwd())))
     if os.path.isdir(arg):
         ap = os.path.abspath(arg)
-        return ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, ap.replace("/", "-"))
+        return ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, dirname_for(ap))
     cands = sorted(d for d in glob.glob(os.path.join(PROJ, "*"))
                    if under_proj(d) and arg in os.path.basename(d))
     if len(cands) > 1:                                    # tie-break: prefer an exact leaf match
