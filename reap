@@ -174,7 +174,7 @@ def meta(path):
         with open(path) as fh:
             for line in fh:
                 n += 1
-                is_title = '"custom-title"' in line or '"agent-name"' in line
+                is_title = '"custom-title"' in line or '"agent-name"' in line or '"ai-title"' in line
                 want_cwd = cwd is None and '"cwd"' in line   # real path, ~1 extra parse per file
                 if not is_title and not want_cwd and (prompt is not None or '"type":"user"' not in line):
                     continue
@@ -184,6 +184,7 @@ def meta(path):
                 t = o.get("type")
                 if t == "custom-title" and o.get("customTitle"): title = clean(o["customTitle"])
                 elif t == "agent-name" and o.get("agentName") and not title: title = clean(o["agentName"])
+                elif t == "ai-title" and o.get("aiTitle") and not title: title = clean(o["aiTitle"])
                 elif prompt is None and t == "user" and not o.get("isMeta"):
                     c = o.get("message", {}).get("content")
                     if isinstance(c, list):
