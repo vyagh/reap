@@ -27,7 +27,7 @@ $ reap rm 7d0a
 nothing to do
 ```
 
-It only ever writes to `~/.claude/projects/`, `~/.claude/jobs/`, and its own trash at `~/.claude/.reap-trash/`, and it skips the `memory/` folders inside projects. To tell what's live it reads `~/.claude/sessions/` and the daemon roster. It never opens settings, credentials, or anything else under `~/.claude`.
+It only ever writes to `~/.claude/projects/`, `~/.claude/jobs/`, `~/.claude/file-history/`, `~/.claude/session-env/`, `~/.claude/tasks/`, and its own trash at `~/.claude/.reap-trash/`, and it skips the `memory/` folders inside projects. To tell what's live it reads `~/.claude/sessions/` and the daemon roster. It never opens settings, credentials, or anything else under `~/.claude`.
 
 ## Usage
 
@@ -65,6 +65,8 @@ A Claude Code chat is three things on disk:
 - job record: `~/.claude/jobs/<short-id>/`, what the agents view lists
 
 The agents view only manages job records. `/resume` reads the transcript files directly. That's why a chat you removed there keeps coming back, and why `reap` has to remove all three.
+
+A session also leaves edit snapshots under `~/.claude/file-history/<id>/` and small state under `~/.claude/session-env/<id>/` and `~/.claude/tasks/<id>/`. `reap` trashes those with the chat too, so they come back on restore.
 
 A chat counts as live while a process holds it: `reap` checks the pid recorded in `~/.claude/sessions/` and the daemon roster. Exit a session and it's deletable right away. The flip side is that a background job parked with no process running isn't protected, so if you want to keep it, don't delete it.
 

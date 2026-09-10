@@ -254,14 +254,17 @@ def load_chats(DIR):
     for jp in glob.glob(os.path.join(DIR, "*.jsonl")):
         uuid = os.path.basename(jp)[:-6]
         sd = os.path.join(DIR, uuid)
+        fh = os.path.join(HOME, ".claude", "file-history", uuid)   # edit snapshots, the big leftover
         title, prompt, cwd, n = meta(jp)
         mt = os.path.getmtime(jp)
+        size = os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0)
+        size += dirsize(fh) if os.path.isdir(fh) else 0
         chats.append({
             "uuid": uuid, "short": uuid.split("-")[0], "dir": DIR, "proj": proj, "path": jp,
             "label": title or prompt or "(empty)",
             "titled": bool(title),                       # else the label is just its first message
             "cwd": cwd,                                  # real path, so headers aren't dash-mangled
-            "msgs": n, "size": os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0),
+            "msgs": n, "size": size,
             "mt": mt, "rel": reltime(mt, now), "live": uuid in live,
         })
     chats.sort(key=lambda c: c["mt"], reverse=True)
@@ -296,6 +299,8 @@ def resumer_job_dirs(uuid):
 
 def chat_artifacts(DIR, uuid):
     arts = [os.path.join(DIR, uuid + ".jsonl"), os.path.join(DIR, uuid)]
+    for sub in ("file-history", "session-env", "tasks"):   # per-session state keyed by uuid
+        arts.append(os.path.join(HOME, ".claude", sub, uuid))
     short = uuid.split("-")[0]                            # empty short would collapse to the whole
     if short: arts.append(os.path.join(HOME, ".claude", "jobs", short))   # jobs/ dir, guard it
     return arts + resumer_job_dirs(uuid)
@@ -312,9 +317,12 @@ def trash_move(key, paths, label="", origin=""):
     moved = []
     for src in paths:
         if not os.path.exists(src): continue
+        base = os.path.basename(src)
+        if os.path.exists(os.path.join(dest, base)):      # e.g. sidecar and file-history/session-env/tasks all named <uuid>
+            base = os.path.basename(os.path.dirname(src)) + "." + base
         try:
-            shutil.move(src, os.path.join(dest, os.path.basename(src)))
-            moved.append([src, os.path.basename(src)])
+            shutil.move(src, os.path.join(dest, base))
+            moved.append([src, base])
         except (OSError, shutil.Error): pass
     with open(os.path.join(dest, "reap-meta.json"), "w") as fh:
         json.dump({"uuid": key, "dir": origin, "label": label, "at": time.time(), "moved": moved}, fh)
@@ -327,7 +335,9 @@ def restore_entry(d):
     """Move a trash entry's artifacts back to their original paths; drop the entry.
     Validates the (possibly tampered) manifest: base must be a bare name inside the entry,
     and src must land back under a directory reap owns, never an arbitrary path."""
-    roots = (os.path.realpath(PROJ), os.path.realpath(os.path.join(HOME, ".claude", "jobs")))
+    roots = (os.path.realpath(PROJ),) + tuple(
+        os.path.realpath(os.path.join(HOME, ".claude", sub))
+        for sub in ("jobs", "file-history", "session-env", "tasks"))
     meta = read_json(os.path.join(d, "reap-meta.json"))
     if not isinstance(meta, dict): return None
     for src, base in meta.get("moved", []):
