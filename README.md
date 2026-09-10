@@ -68,6 +68,8 @@ The agents view only manages job records. `/resume` reads the transcript files d
 
 A session also leaves edit snapshots under `~/.claude/file-history/<id>/` and small state under `~/.claude/session-env/<id>/` and `~/.claude/tasks/<id>/`. `reap` trashes those with the chat too, so they come back on restore.
 
+The prompts you typed also land in `~/.claude/history.jsonl`, one shared append-only file behind the prompt history. `reap` never touches it: every session writes there, so rewriting it is the one place a bug could damage chats you didn't delete.
+
 A chat counts as live while a process holds it: `reap` checks the pid recorded in `~/.claude/sessions/` and the daemon roster. Exit a session and it's deletable right away. The flip side is that a background job parked with no process running isn't protected, so if you want to keep it, don't delete it.
 
 ## License
