@@ -178,7 +178,8 @@ def meta(path):
     try:
         with open(path) as fh:
             for line in fh:
-                n += 1
+                # count turns: a transcript also logs mode/attachment/title lines
+                if '"type":"user"' in line or '"type":"assistant"' in line: n += 1
                 is_title = '"custom-title"' in line or '"agent-name"' in line or '"ai-title"' in line
                 want_cwd = cwd is None and '"cwd"' in line   # real path, ~1 extra parse per file
                 if not is_title and not want_cwd and (prompt is not None or '"type":"user"' not in line):
