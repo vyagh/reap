@@ -945,6 +945,7 @@ def print_help():
         ("reap restore <id|name>", "restore a chat from the trash"),
         ("reap --help", "this help"),
         ("reap --version", "print version"),
+        ("reap --selftest", "sanity check against your own ~/.claude, prints what it saw"),
     ]
     w = max(len(a) for a, _ in usage)
     for a, b in usage:
