@@ -185,15 +185,17 @@ def reltime(mt, now):
 def meta(path):
     # Only title (custom-title/agent-name) and the first user prompt are needed,
     # and they live in the header. json.loads is the launch hotspot, so cheaply
-    # reject lines that can't carry either before parsing: title/prompt/count
-    # stay byte-identical to a full parse.
+    # reject lines that can't carry either before parsing: title and prompt stay
+    # byte-identical to a full parse. n counts your prompts by substring, a user
+    # record that isn't a tool result or a meta line. Assistant records can't be
+    # counted this way (one record per content block), so they're left out.
     title = prompt = cwd = None
     n = 0
     try:
         with open(path) as fh:
             for line in fh:
-                # count turns: a transcript also logs mode/attachment/title lines
-                if '"type":"user"' in line or '"type":"assistant"' in line: n += 1
+                if '"type":"user"' in line and '"tool_result"' not in line and '"isMeta":true' not in line:
+                    n += 1
                 is_title = '"custom-title"' in line or '"agent-name"' in line or '"ai-title"' in line
                 want_cwd = cwd is None and '"cwd"' in line   # real path, ~1 extra parse per file
                 if not is_title and not want_cwd and (prompt is not None or '"type":"user"' not in line):
@@ -730,7 +732,7 @@ def run_ui(loader, title, grouped):
                 full = (parent + "/" + leaf) if parent else leaf
                 if full: add(3, px, fit(full, pw), DIM)
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
-                bits = f"{human(c['size'])} · {plural(c['msgs'], 'msg')} · {when}"
+                bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')} · {when}"
                 add(5, px, fit(bits, pw), YEL if c["size"] >= BIG_CHAT else DIM)
                 if c["live"] and len(bits) + 8 < pw: add(5, px + len(bits) + 1, "● live", OK)
                 add(6, px, RULE * pw, DIM)
