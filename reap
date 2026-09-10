@@ -124,10 +124,18 @@ def read_json(path, tries=3):
 def days_left(at, now):
     return max(0, TRASH_DAYS - int((now - at) / 86400))
 
-def proc_dead(pid):
+def own_pid_ns():
+    try: return os.readlink("/proc/self/ns/pid")       # e.g. 'pid:[4026531836]'; linux only
+    except OSError: return None
+
+def proc_dead(pid, domain=None):
     """True only when we can positively confirm the pid is gone: an exited session.
-    Anything uncertain (no pid, permission error) stays 'alive' so the guard errs safe."""
+    Anything uncertain (no pid, permission error) stays 'alive' so the guard errs safe.
+    `domain` is the session's pidDomain: a pid from another namespace (container,
+    sandbox) means nothing here, so such a session is never judged dead."""
     if not isinstance(pid, int): return False
+    ns = own_pid_ns()
+    if domain and ns and not str(domain).endswith(ns): return False
     try: os.kill(pid, 0)
     except ProcessLookupError: return True
     except Exception: pass
@@ -138,11 +146,11 @@ def live_session_ids():
     ids = set()
     for p in glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json")):
         o = read_json(p)
-        if isinstance(o, dict) and not proc_dead(o.get("pid")): ids.add(o.get("sessionId"))
+        if isinstance(o, dict) and not proc_dead(o.get("pid"), o.get("pidDomain")): ids.add(o.get("sessionId"))
     r = read_json(os.path.join(HOME, ".claude", "daemon", "roster.json"))
     if isinstance(r, dict):
         for w in r.get("workers", {}).values():
-            if isinstance(w, dict) and not proc_dead(w.get("pid")): ids.add(w.get("sessionId"))
+            if isinstance(w, dict) and not proc_dead(w.get("pid"), w.get("pidDomain")): ids.add(w.get("sessionId"))
     return {i for i in ids if i}
 
 def dirsize(p):
