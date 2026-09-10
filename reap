@@ -818,7 +818,7 @@ def run_ui(loader, title, grouped):
                 add(h - 1, 2, flt, curses.A_BOLD)
                 add(h - 1, 2 + len(flt), "▏", DIM)
                 mtxt = f"{len(vis)} match{'es' if len(vis) != 1 else ''} · enter keep · esc clear"
-                add(h - 1, max(1, cw - len(mtxt)), mtxt, DIM)
+                add(h - 1, max(1, w - len(mtxt) - 1), mtxt, DIM)
             elif msg:
                 add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
             else:
@@ -831,7 +831,7 @@ def run_ui(loader, title, grouped):
                     add(h - 1, x, act, DIM); x += len(act) + 3
                 if picked:
                     ptxt = f"{PICK_ON} {len(picked)} picked · {human(psz)}"
-                    add(h - 1, max(1, cw - len(ptxt)), ptxt, OK)
+                    add(h - 1, max(x + 1, w - len(ptxt) - 1), ptxt, OK)
             stdscr.refresh()
 
             ch = stdscr.getch()
