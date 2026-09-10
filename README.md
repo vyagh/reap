@@ -1,15 +1,8 @@
-# reap: Claude Code chat manager
+# reap
 
-A small terminal tool to view, peek at, and delete your local Claude Code chats.
+Nothing in Claude Code deletes a transcript. Press ctrl+x on a chat in the agents view and it drops the job record, but the transcript is still on disk and the chat still shows up in `/resume`. There's no delete in `/resume` either, and none on the CLI.
 
-Claude Code keeps every conversation as a transcript under `~/.claude/projects/`.
-Deleting one from the agents view only dismisses it from the list, the
-transcript stays on disk and still shows up in `/resume`. `reap` deletes a chat
-for real: its transcript, its sidecar directory, and its agents-view job record,
-together. Deletes are reversible for 7 days.
-
-Pure-stdlib Python, no dependencies. It reads and deletes files under
-`~/.claude/` and nothing else.
+`reap` is a small terminal tool that removes a chat for real: the transcript, its sidecar directory, and the job record, together. One Python file, standard library only. Deletes go to a trash you can undo from for 7 days.
 
 ## Install
 
@@ -18,7 +11,23 @@ curl -fsSL https://raw.githubusercontent.com/vyagh/reap/main/reap -o ~/.local/bi
 chmod +x ~/.local/bin/reap
 ```
 
-Make sure `~/.local/bin` is on your `PATH`, then run `reap`.
+`~/.local/bin` needs to be on your `PATH`. Python 3.8 or newer.
+
+## Try it before you trust it
+
+`reap rm` is a dry run unless you add `--apply`, and it refuses anything that's still running:
+
+```
+$ reap rm 85b3
+would trash 85b3f4fe-cb46-47f4-9651-65619d2b40c4 (transcript + sidecar + job)
+dry-run, add --apply to trash (--hard to skip trash)
+
+$ reap rm 7d0a
+!! SKIP 7d0a6d37-f7a6-412b-a7cc-d5f6ae5fdb51: session is live
+nothing to do
+```
+
+It only ever writes to `~/.claude/projects/`, `~/.claude/jobs/`, and its own trash at `~/.claude/.reap-trash/`, and it skips the `memory/` folders inside projects. To tell what's live it reads `~/.claude/sessions/` and the daemon roster. It never opens settings, credentials, or anything else under `~/.claude`.
 
 ## Usage
 
@@ -33,71 +42,31 @@ reap restore <id|name>   restore a chat from the trash
 reap --help              full help
 ```
 
-`reap rm` options: `--apply` (actually delete; default is a dry-run),
-`--hard` (skip the trash, delete irreversibly), `--orphans` (remove leftover
-sidecar dirs), `--all` (with `--orphans`, sweep every project), `-p <name>`
-(target another project).
+`reap rm` options: `--apply` to actually delete, `--hard` to skip the trash, `--orphans` to remove leftover sidecar dirs that have no transcript, `--all` with `--orphans` to sweep every project, `-p <name>` to target a project other than the current directory's.
 
-Ephemeral `/tmp` scratchpad sessions are hidden by default; pass `--tmp` to
-include them.
+Scratchpad sessions under `/tmp` are hidden by default. `--tmp` shows them.
 
-## Delete safely
+## Undo
 
-Delete is a soft delete: the chat is **moved** to `~/.claude/.reap-trash/` and
-stays recoverable for 7 days (pruned lazily on launch, no background process).
+A delete moves the chat to `~/.claude/.reap-trash/` and keeps it there for 7 days. Pruning happens on the next launch, so there's no background process and the disk is freed only when the trash is pruned or emptied.
 
-- In the picker: `u` undoes your last delete; `t` opens a trash browser to
-  restore or permanently purge.
-- On the CLI: `reap restore <id|name>`, `reap trash`, `reap trash --empty`.
-- `reap rm --hard` skips the trash when you really want it gone now.
+In the picker, `u` undoes the last delete and `t` opens the trash to restore or purge. On the CLI it's `reap restore <id|name>`, `reap trash`, and `reap trash --empty`. `reap rm --hard` skips the trash when you really do want it gone now.
 
-Live sessions are protected: a chat whose process is still running can't be
-selected or deleted. Exit the session and it's immediately deletable.
+## The picker
 
-## Picker keys
-
-| key | action |
-| --- | --- |
-| `↑`/`↓`, `j`/`k` | move |
-| `PgUp`/`PgDn`, `g`/`G` | page / top-bottom |
-| `[` `]` | previous / next workspace (in `--all`) |
-| `z` / `Z` | fold this group / fold all |
-| `space` | select (skips live sessions) |
-| `a` / `c` | toggle select-all (filtered) / clear |
-| `p` | peek: read-only preview of the chat |
-| `d` / `enter` | delete selected → trash (asks to confirm) |
-| `u` | undo the last delete |
-| `t` | trash browser: restore / purge |
-| `s` | sort: recency ↔ size |
-| `/` | filter (title / uuid / workspace) |
-| `?` | show keys |
-| `q` | quit |
-
-On a wide terminal the picker shows a detail pane for the chat under the cursor
-with its path, size, message count, and a preview of the conversation.
+Run `reap` in a project, or `reap --all` for everything grouped by workspace. Move with the arrows or `j`/`k`, `space` to pick, `p` to peek at the conversation without changing anything, `d` to delete what you picked (it asks first). `/` filters by title, id or workspace, `s` flips the sort between recency and size, `z`/`Z` fold groups, `[`/`]` jump between workspaces. `?` lists all of them. On a wide terminal there's a detail pane with the chat's path, size, message count, and a preview of the conversation.
 
 ## How it works
 
 A Claude Code chat is three things on disk:
 
-- **transcript**: `~/.claude/projects/<project>/<id>.jsonl`
-- **sidecar dir**: `~/.claude/projects/<project>/<id>/` (cached tool results and
-  sub-agent logs; usually where the disk space goes)
-- **job record**: `~/.claude/jobs/<short-id>/` (what the agents view lists)
+- transcript: `~/.claude/projects/<project>/<id>.jsonl`
+- sidecar dir: `~/.claude/projects/<project>/<id>/`, cached tool results and sub-agent logs, usually where the disk space actually goes
+- job record: `~/.claude/jobs/<short-id>/`, what the agents view lists
 
-The agents-view delete removes only the job record; `/resume` reads the
-transcript directly, so the chat survives. `reap` removes all three together, so
-the chat is gone from `/resume` and the agents view, and (once the trash is
-pruned or emptied) the disk is reclaimed.
+The agents view only manages job records. `/resume` reads the transcript files directly. That's why a chat you removed there keeps coming back, and why `reap` has to remove all three.
 
-A session counts as "live" only while its process is actually running (checked
-by pid via `~/.claude/sessions/` and the daemon roster), so a session you've
-exited stops being protected right away.
-
-## Requirements
-
-- Python 3.8+ (standard library only)
-- A local Claude Code install (the `~/.claude/` directory)
+A chat counts as live while a process holds it: `reap` checks the pid recorded in `~/.claude/sessions/` and the daemon roster. Exit a session and it's deletable right away. The flip side is that a background job parked with no process running isn't protected, so if you want to keep it, don't delete it.
 
 ## License
 
