@@ -124,18 +124,24 @@ def read_json(path, tries=3):
 def days_left(at, now):
     return max(0, TRASH_DAYS - int((now - at) / 86400))
 
-def own_pid_ns():
-    try: return os.readlink("/proc/self/ns/pid")       # e.g. 'pid:[4026531836]'; linux only
+def own_pid_domain():
+    """Claude Code's pidDomain for this host: 'linux:<machine-id>:pid:[<ns inode>]'.
+    None where either part is unreadable (macOS has neither), and the pid check
+    then stands alone."""
+    try:
+        with open("/etc/machine-id") as fh: mid = fh.read().strip()
+        return f"linux:{mid}:{os.readlink('/proc/self/ns/pid')}"
     except OSError: return None
 
 def proc_dead(pid, domain=None):
     """True only when we can positively confirm the pid is gone: an exited session.
     Anything uncertain (no pid, permission error) stays 'alive' so the guard errs safe.
-    `domain` is the session's pidDomain: a pid from another namespace (container,
-    sandbox) means nothing here, so such a session is never judged dead."""
+    `domain` is the session's pidDomain: a pid from another machine or namespace
+    (synced ~/.claude, container, sandbox) means nothing here, so such a session
+    is never judged dead."""
     if not isinstance(pid, int): return False
-    ns = own_pid_ns()
-    if domain and ns and not str(domain).endswith(ns): return False
+    own = own_pid_domain()
+    if domain and own and str(domain).strip() != own: return False
     try: os.kill(pid, 0)
     except ProcessLookupError: return True
     except Exception: pass
