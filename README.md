@@ -4,6 +4,8 @@ Nothing in Claude Code deletes a transcript. Press ctrl+x on a chat in the agent
 
 `reap` is a small terminal tool that removes a chat for real: the transcript, its sidecar directory, and the job record, together. One Python file, standard library only. Deletes go to a trash you can undo from for 7 days.
 
+![the reap picker: pick two chats, delete them to the trash, undo](docs/reap.gif)
+
 ## Install
 
 ```bash
