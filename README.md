@@ -4,15 +4,15 @@
 
 Delete Claude Code sessions for real.
 
-Nothing in Claude Code deletes a transcript. ctrl+x in the agents view drops the job record, but the transcript stays on disk and the chat is back in `/resume`.
+Nothing in Claude Code deletes a transcript. ctrl+x in the agents view drops the job record. The transcript stays on disk and the chat is back in `/resume`.
 
-`reap` removes the whole session. `rm` is a dry run by default, the picker confirms first, live sessions are refused, and deletes go to a trash you can undo from.
+`reap` removes the whole session. On the command line it's a dry run until you say `--apply`. The picker asks first. Live sessions are refused, and every delete goes to a trash you can undo from.
 
 ![reap: pick two chats, delete them to the trash, open the trash, undo](docs/reap.gif)
 
 ## Install
 
-```bash
+```sh
 curl -fsSL https://raw.githubusercontent.com/vyagh/reap/v0.4.0/reap -o ~/.local/bin/reap
 chmod +x ~/.local/bin/reap
 ```
@@ -21,85 +21,79 @@ One file of stdlib Python, so read it before you run it. Python 3.8 or newer. Li
 
 ## Use
 
-```
-reap            picker for this project
-reap --all      picker for every project, grouped by workspace
+```sh
+reap            # picker for this project
+reap --all      # every project, grouped by workspace
 ```
 
 | key | does |
 |---|---|
 | `space` | pick |
 | `d` | delete what you picked, after a confirm |
-| `u` | undo the last delete |
+| `u` | undo what you deleted in this run |
 | `p` | read the chat first |
 | `/` | filter |
 | `t` | open the trash |
 | `?` | all keys |
 
-For scripts, the same without the UI:
+The same from a script:
 
-```
-reap ls --all           list, pipe-friendly
-reap rm 85b3            dry run: says what it would trash
-reap rm 85b3 --apply    trash it
-reap restore 85b3       bring it back
-reap trash --empty      free the disk now
+```sh
+reap ls --all           # list every chat, grouped by project
+reap rm 5d4a            # dry run: says what it would trash
+reap rm 5d4a --apply    # trash it
+reap restore 5d4a       # bring it back
+reap trash --empty      # purge the trash, no prompt
 ```
 
 ## Safety
 
-One chat, start to finish. `rm` is a dry run until you add `--apply`:
+One chat from dry run to restore, then a running session that gets refused:
 
-```
-$ reap rm 86eb
-would trash 86eb145e-acc2-42cc-9cf6-d5e58c5aeff9 (transcript, sidecar, file-history, jobs)
-dry-run, add --apply to trash (--hard to skip trash)
+![reap on the command line: dry run, delete to trash, restore, and a live session refused](docs/reap-cli.png)
 
-$ reap rm 86eb --apply
-TRASH 86eb145e-acc2-42cc-9cf6-d5e58c5aeff9 (transcript, sidecar, file-history, jobs)
-done, in trash for 7d (reap restore to undo)
-
-$ reap restore 86eb
-restored 86eb145e  events backfill
-```
-
-A session whose process is still running is refused, even with `--apply`:
-
-```
-$ reap rm 7d0a --apply
-!! SKIP 7d0a6d37-f7a6-412b-a7cc-d5f6ae5fdb51: session is live
-nothing to do
-```
-
-Deletes go to a trash at `~/.claude/.reap-trash/`, kept 7 days and pruned the next time reap runs. `u` in the picker undoes the last delete, and again for the one before; `t` or `reap restore` brings back anything else. `--hard` skips the trash.
-
-It writes only under `~/.claude/projects/`, `jobs/`, `file-history/`, `session-env/`, `tasks/` and its own trash. Settings, credentials, `memory/` folders and `history.jsonl` are never touched.
+| what | how |
+|---|---|
+| trash | `~/.claude/.reap-trash/`. Kept 7 days, pruned the next time reap runs |
+| undo | `u` in the picker, most recent first. `t` or `reap restore` for anything older |
+| `--hard` | skips the trash. Still a dry run without `--apply`, still refuses live sessions |
+| `rm --orphans` | dry run and trash like `rm`. No live check, orphans have no session. `memory/` is skipped |
+| writes to | `~/.claude/projects/`, `jobs/`, `file-history/`, `session-env/`, `tasks/`, and its own trash |
+| never touches | settings, credentials, `memory/` folders, `history.jsonl` |
 
 ## How it works
 
-A chat is several things on disk, and the built-in views each touch one:
+A chat is several things on disk, and the built-in views reach only two of them:
 
 ```
 ~/.claude/
-  projects/<project>/
-    <id>.jsonl        transcript          what /resume reads
-    <id>/             sidecar dir         tool results and sub-agent logs
-  jobs/<short-id>/    job record          what the agents view lists, ctrl+x removes only this
-  file-history/<id>/  edit snapshots, often the biggest of all
-  session-env/<id>/   small state
-  tasks/<id>/         small state
+├── projects/<project>/
+│   ├── <id>.jsonl          transcript        what /resume reads
+│   └── <id>/               sidecar dir       tool results and sub-agent logs
+├── jobs/<short-id>/        job record        what the agents view lists
+├── file-history/<id>/      edit snapshots    can be large
+├── session-env/<id>/       small state
+└── tasks/<id>/             small state
 ```
 
-That's why a chat removed from the agents view keeps coming back. `reap` moves all of it to the trash together, and back on restore.
+ctrl+x in the agents view removes only the job record. That's why the chat keeps coming back. `reap` moves all of it to the trash together, and back on restore.
 
-A session is live while a process holds it. `reap` checks the pid recorded in `~/.claude/sessions/` and the daemon roster. Exit a session and it's deletable right away, on the machine that ran it. A background job with no process isn't protected; it lists like any other chat and can be trashed.
+Live means a process still holds the session. `reap` checks the pid in `~/.claude/sessions/` and the daemon roster.
+
+| the session | what reap does |
+|---|---|
+| still running | refused, in the picker and on the CLI |
+| exited | can be deleted right away, on the machine that ran it |
+| a background job with no process | treats it like any other chat |
+| started on another machine or in a container | on Linux, kept protected when the session records its machine. Delete it where it ran |
+| on macOS | checks only the pid, there is no machine id |
 
 | option | does |
 |---|---|
 | `rm --orphans` | remove sidecar dirs that lost their transcript |
 | `rm --orphans --all` | the same across every project |
-| `rm -p <name>` | delete in another project; the picker and `ls` take the name directly |
-| `--tmp` | show scratchpad sessions under `/tmp` in the picker and `ls` |
+| `rm -p <name>` | delete in another project. The picker and `ls` take the name directly |
+| `--tmp` | with `--all`: also show scratchpad sessions under `/tmp` |
 
 ## License
 
