@@ -1005,7 +1005,7 @@ def cmd_rm(args):
         sys.exit(f"no chats found for: {DIR}")
     plan = []                                            # (uuid_or_None, path_or_None)
     if orphans:
-        dirs = ([d for d in sorted(glob.glob(os.path.join(PROJ, "*"))) if os.path.isdir(d)]
+        dirs = ([d for d in sorted(glob.glob(os.path.join(PROJ, "*"))) if under_proj(d)]
                 if every else [DIR])
         for D in dirs:
             jsonls = {os.path.basename(p)[:-6] for p in glob.glob(os.path.join(D, "*.jsonl"))}
