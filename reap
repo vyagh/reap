@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """reap, Claude Code chat manager: view, peek and delete local chats.
 
-A chat = its transcript + sidecar dir + agents-view job record. reap deletes
-all three together, so a chat is gone from /resume AND the agents view.
+A chat is its transcript, sidecar dir, job record and per-session state
+(file-history, session-env, tasks). reap trashes all of it together, so it is
+gone from /resume and the agents view.
 
 Usage:
   reap                     interactive picker for the current project
   reap <name|path>         picker for a project (name = folder substring)
   reap --all               picker across every project, grouped by workspace
-  reap ls [<name>|--all]   print a plain list (no UI; pipe-friendly)
+  reap ls [<name>|--all]   print a plain list (no UI, pipe-friendly)
   reap rm <id>... [opts]   delete by uuid prefix (for scripts)   opts below
   reap trash [--empty]     list recoverable deletes (or purge them all)
   reap restore <id|name>   restore a chat from the trash
@@ -20,9 +21,9 @@ Usage:
                    --all      with --orphans: sweep every project
                    -p <name>  target another project (default: current dir)
 
-  /tmp scratchpad sessions are hidden; pass --tmp to include them.
+  With --all, /tmp scratchpad sessions are hidden. Pass --tmp to include them.
 
-Deletes are soft: chats move to a trash and stay recoverable for 7 days
+Deletes go to a trash and stay recoverable for 7 days unless you pass --hard
 (pruned lazily at launch, no background process). Undo with `u` / `reap restore`.
 
 Picker keys (press ? inside for this list):
@@ -941,15 +942,15 @@ def print_help():
     print(f"{B('reap')} {D(': Claude Code chat manager')}")
     print(D("view, peek and delete your local Claude Code chats"))
     print()
-    print(D("a chat = transcript + sidecar dir + agents-view job record;"))
-    print(D("reap removes all three, so it's gone from /resume and the agents view."))
+    print(D("a chat = transcript + sidecar dir + job record + file-history, session-env, tasks."))
+    print(D("reap trashes all of it, so it's gone from /resume and the agents view."))
     print()
     print(HEAD("usage"))
     usage = [
         ("reap", "interactive picker: current project"),
         ("reap <name|path>", "picker for a project (name = folder substring)"),
         ("reap --all", "picker across all projects, grouped by workspace"),
-        ("reap ls [<name>|--all]", "plain list (no UI; pipe-friendly)"),
+        ("reap ls [<name>|--all]", "plain list (no UI, pipe-friendly)"),
         ("reap rm <id>... [opts]", "delete by uuid prefix (for scripts)"),
         ("reap trash [--empty]", "list recoverable deletes (or purge all)"),
         ("reap restore <id|name>", "restore a chat from the trash"),
@@ -969,7 +970,7 @@ def print_help():
                  ("-p <name>", "target another project (default: current dir)")]:
         print(f"    {CMD(a.ljust(11))}  {b}")
     print()
-    print(D("  /tmp scratchpad sessions are hidden by default, pass --tmp to include them."))
+    print(D("  with --all, /tmp scratchpad sessions are hidden. pass --tmp to include them."))
     print()
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
@@ -978,7 +979,7 @@ def print_help():
                       ("view", "s sort recency<->size   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
-    print(D(f"deletes are confirmed first and reversible for {TRASH_DAYS} days; live sessions are protected."))
+    print(D(f"the picker confirms before deleting. deletes go to a trash for {TRASH_DAYS} days unless you pass --hard. live sessions are refused."))
 
 def pop_flag(lst, flag):
     if flag in lst: lst.remove(flag); return True
