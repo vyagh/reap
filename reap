@@ -305,6 +305,16 @@ def chat_artifacts(DIR, uuid):
     if short: arts.append(os.path.join(HOME, ".claude", "jobs", short))   # jobs/ dir, guard it
     return arts + resumer_job_dirs(uuid)
 
+def artifact_kinds(DIR, uuid):
+    """What a delete would actually move, for the dry-run line: only what is on disk."""
+    kinds = []
+    for p in chat_artifacts(DIR, uuid):
+        if not os.path.exists(p): continue
+        k = ("transcript" if p.endswith(".jsonl") else "sidecar" if p == os.path.join(DIR, uuid)
+             else os.path.basename(os.path.dirname(p)))
+        if k not in kinds: kinds.append(k)
+    return kinds
+
 def delete_chat(DIR, uuid):                              # hard, irreversible
     for p in chat_artifacts(DIR, uuid):
         if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
@@ -1003,7 +1013,7 @@ def cmd_rm(args):
     DIR = resolve_dir(proj)                              # None -> current project
     if not os.path.isdir(DIR) and not (orphans and every):
         sys.exit(f"no chats found for: {DIR}")
-    plan = []                                            # (uuid_or_None, path_or_None)
+    plan = []                                            # (uuid_or_None, path_or_None, label)
     if orphans:
         dirs = ([d for d in sorted(glob.glob(os.path.join(PROJ, "*"))) if under_proj(d)]
                 if every else [DIR])
@@ -1012,7 +1022,7 @@ def cmd_rm(args):
             for d in glob.glob(os.path.join(D, "*/")):
                 b = os.path.basename(d.rstrip("/"))
                 if b == "memory" or b in jsonls: continue
-                plan.append((None, d.rstrip("/")))
+                plan.append((None, d.rstrip("/"), "orphan sidecar dir"))
     else:
         ids = [a for a in args if not a.startswith("-")]
         if not ids: sys.exit("usage: reap rm <id-prefix>... [--apply] [--orphans] [-p <project>]")
@@ -1023,22 +1033,22 @@ def cmd_rm(args):
             if not hits: print(f"!! no chat matches '{tok}'"); continue
             if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {hits}"); continue
             if hits[0] in live:
-                print(f"!! SKIP {hits[0]}: session is live"); continue
-            plan.append((hits[0], None))
+                print(f"!! SKIP {hits[0][:8]}: session is live"); continue
+            title, prompt, _, _ = meta(os.path.join(DIR, hits[0] + ".jsonl"))
+            plan.append((hits[0], None, title or prompt or ""))
     if not plan:
         print("nothing to do"); return
     verb = "purge" if hard else "trash"
-    for uuid, path in plan:
+    for uuid, path, label in plan:
         what = (f"orphan dir {pretty(os.path.dirname(path))}/{os.path.basename(path)[:8]}"
-                if path else f"{uuid} (transcript + sidecar + job)")
+                if path else f"{uuid[:8]} ({', '.join(artifact_kinds(DIR, uuid))})")
         print((verb.upper() + " " if apply else f"would {verb} ") + what)
     if apply:
-        for uuid, path in plan:
+        for uuid, path, label in plan:
             if path and hard: shutil.rmtree(path, ignore_errors=True)
-            elif path: trash_move(os.path.basename(path), [path], "orphan sidecar dir",
-                                  os.path.dirname(path))
+            elif path: trash_move(os.path.basename(path), [path], label, os.path.dirname(path))
             elif hard: delete_chat(DIR, uuid)
-            else: trash_chat(DIR, uuid)
+            else: trash_chat(DIR, uuid, label)
         print("done." if hard else f"done, in trash for {TRASH_DAYS}d (reap restore to undo)")
     else:
         print(f"dry-run, add --apply to {verb}" + ("" if hard else " (--hard to skip trash)"))
