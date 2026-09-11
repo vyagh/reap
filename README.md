@@ -1,19 +1,21 @@
 # reap
 
+[![version](https://img.shields.io/github/v/tag/vyagh/reap?color=6c6f9c&label=version)](https://github.com/vyagh/reap/tags)
+
 Delete Claude Code sessions for real.
 
 Nothing in Claude Code deletes a transcript. Ctrl+x in the agents view drops the job record, but the transcript stays on disk and the chat is back in `/resume`. `reap` removes the whole session, with a dry run, a live-session guard, and a trash you can undo from.
 
-![reap: peek at a chat, pick two, delete them to the trash, undo, filter](docs/reap.gif)
+![reap: pick two chats, delete them to the trash, open the trash, undo](docs/reap.gif)
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vyagh/reap/main/reap -o ~/.local/bin/reap
+curl -fsSL https://raw.githubusercontent.com/vyagh/reap/v0.4.0/reap -o ~/.local/bin/reap
 chmod +x ~/.local/bin/reap
 ```
 
-`~/.local/bin` needs to be on your `PATH`. Python 3.8 or newer, nothing else.
+`~/.local/bin` needs to be on your `PATH`. Python 3.8 or newer, nothing else. Linux and macOS; on Windows use WSL, the picker needs curses.
 
 ## Day to day
 
