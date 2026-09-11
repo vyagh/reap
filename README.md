@@ -62,13 +62,20 @@ It writes only under `~/.claude/projects/`, `jobs/`, `file-history/`, `session-e
 
 ## How it works
 
-A Claude Code chat is three things on disk:
+A Claude Code chat is three things on disk, and the built-in views each touch one:
 
-- the transcript, `~/.claude/projects/<project>/<id>.jsonl`
-- its sidecar dir, `~/.claude/projects/<project>/<id>/`, cached tool results and sub-agent logs, usually where the disk space goes
-- the job record, `~/.claude/jobs/<short-id>/`, what the agents view lists
+```
+~/.claude/
+  projects/<project>/
+    <id>.jsonl        transcript          what /resume reads
+    <id>/             sidecar dir         tool results, sub-agent logs, most of the disk
+  jobs/<short-id>/    job record          what the agents view lists, ctrl+x removes only this
+  file-history/<id>/  edit snapshots
+  session-env/<id>/   small state
+  tasks/<id>/         small state
+```
 
-The agents view manages only the job record and `/resume` reads the transcripts directly, which is why a chat you removed there keeps coming back. `reap` moves all three to the trash, along with the session's edit snapshots under `file-history/` and its state under `session-env/` and `tasks/`, and moves them back on restore.
+That's why a chat you removed from the agents view keeps coming back. `reap` moves all of the above to the trash together, and back on restore.
 
 Live means a process holds the session: `reap` checks the pid in `~/.claude/sessions/` and the daemon roster. Exit a session and it's deletable right away. A background job parked with no process isn't protected.
 
