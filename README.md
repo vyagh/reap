@@ -48,18 +48,25 @@ reap trash --empty      free the disk now
 
 ## Safety
 
-**Dry run by default.** `rm` only says what it would do until you add `--apply`:
+One session, start to finish. `rm` is a dry run until you add `--apply`:
 
 ```
 $ reap rm 85b3
 would trash 85b3f4fe-cb46-47f4-9651-65619d2b40c4 (transcript + sidecar + job)
 dry-run, add --apply to trash (--hard to skip trash)
+
+$ reap rm 85b3 --apply
+TRASH 85b3f4fe-cb46-47f4-9651-65619d2b40c4 (transcript + sidecar + job)
+done, in trash for 7d (reap restore to undo)
+
+$ reap restore 85b3
+restored 85b3f4fe
 ```
 
-**Live sessions are refused**, in the picker and on the CLI:
+A session whose process is still running is refused, even with `--apply`:
 
 ```
-$ reap rm 7d0a
+$ reap rm 7d0a --apply
 !! SKIP 7d0a6d37-f7a6-412b-a7cc-d5f6ae5fdb51: session is live
 nothing to do
 ```
