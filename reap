@@ -61,6 +61,7 @@ HELP_LINES = [
     ("", "  a / c          toggle select-all shown / clear"),
     ("", "  p              peek: read-only preview"),
     ("", "  d or enter     delete selected → trash (confirms first)"),
+    ("", "  m              keep: hide until you ask, never deleted"),
     ("", ""),
     ("H", "trash · undo"),
     ("", "  u              undo the last delete"),
@@ -68,10 +69,11 @@ HELP_LINES = [
     ("", ""),
     ("H", "view"),
     ("", "  s              sort: recency ↔ size"),
+    ("", "  .              show / hide kept chats"),
     ("", "  /              filter title · uuid · workspace"),
     ("", "  q              quit"),
     ("", ""),
-    ("D", "delete moves the chat to a trash, recoverable for 7 days."),
+    ("D", "delete moves the chat to a trash, recoverable for 7 days. keep only hides it."),
 ]
 
 def under_proj(d):
@@ -277,6 +279,7 @@ def peek_turns(path, cap=250, text_only=False):
 
 def load_chats(DIR):
     live = live_session_ids()
+    keep = load_state()["keep"]
     now = time.time()
     proj = pretty(DIR)
     chats = []
@@ -295,6 +298,7 @@ def load_chats(DIR):
             "cwd": cwd,                                  # real path, so headers aren't dash-mangled
             "msgs": n, "size": size,
             "mt": mt, "rel": reltime(mt, now), "live": uuid in live,
+            "kept": uuid in keep,
         })
     chats.sort(key=lambda c: c["mt"], reverse=True)
     return chats
@@ -517,16 +521,21 @@ def run_ui(loader, title, grouped):
             SEL = curses.A_REVERSE | curses.A_BOLD
         WARN = YEL | curses.A_BOLD
 
+        keep_map = load_state()["keep"]                  # uuid -> epoch kept, refreshed on reload
+        show_kept = False                                # resets to hidden on every launch
+
         chats = loader()
         by = {c["uuid"]: c for c in chats}
         picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, None, "recency"
         undo = []                                        # this session's deletes, one list of trash dirs each
         tn, tb = trash_stat()                            # cached; refreshed only on change
         folded = set()                                   # collapsed project groups
+        focus = None                                     # uuid the cursor should land on after a view change
         pcache = {}                                       # uuid -> preview turns (lazy, cached)
 
         def reload():                                    # after any trash-mutating action
-            nonlocal chats, by, tn, tb
+            nonlocal chats, by, tn, tb, keep_map
+            keep_map = load_state()["keep"]
             chats = loader(); by = {c["uuid"]: c for c in chats}
             tn, tb = trash_stat()
 
@@ -686,6 +695,8 @@ def run_ui(loader, title, grouped):
             f = flt.lower()
             vis = ordered if not flt else [c for c in ordered
                                            if f in c["label"].lower() or f in c["uuid"] or f in c["proj"].lower()]
+            all_vis = vis                                # keeps hidden chats, so . can find the nearest one
+            if not show_kept: vis = [c for c in vis if not c["kept"]]
 
             items = []                                   # gap + header + chat rows
             if grouped:
@@ -702,6 +713,11 @@ def run_ui(loader, title, grouped):
                     if c["proj"] not in folded: items.append(("chat", c))
             else:
                 items = [("chat", c) for c in vis]
+
+            if focus:
+                at = [i for i, it in enumerate(items) if it[0] == "chat" and it[1]["uuid"] == focus]
+                if at: cur = at[0]
+                focus = None
 
             # a folded header is navigable, so you can still reach and reopen it
             ci = [i for i, it in enumerate(items)
@@ -727,9 +743,15 @@ def run_ui(loader, title, grouped):
             badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
             add(0, max(1, cw - len(stats) - len(badge)), stats, DIM)
             if badge: add(0, max(1, cw - len(badge) + 1), badge, ACC | curses.A_BOLD)
+            kept_count = sum(1 for c in chats if c["kept"])
+            used = len(stats) + len(badge)
             if tn:                                       # disk parked in trash, never hide this
                 ti = f"trash {human(tb)}"
-                add(0, max(1, cw - len(stats) - len(badge) - len(ti) - 3), ti, YEL)
+                add(0, max(1, cw - used - len(ti) - 3), ti, YEL)
+                used += len(ti) + 3
+            if kept_count:
+                ki = f"{kept_count} kept"
+                add(0, max(1, cw - used - len(ki) - 3), ki, DIM)
             add(1, 0, RULE * rw, DIM)
 
             def draw_hdr(y, it, sel=False):
@@ -768,6 +790,9 @@ def run_ui(loader, title, grouped):
                 leaf, parent = split_path(c["cwd"], "")
                 full = (parent + "/" + leaf) if parent else leaf
                 if full: add(3, px, fit(full, pw), DIM)
+                if c["kept"]:
+                    kd = time.strftime("%b %d", time.localtime(keep_map.get(c["uuid"], 0)))
+                    add(4, px, fit(f"kept {kd} · m again to unkeep", pw), DIM)
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
                 bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')} · {when}"
                 add(5, px, fit(bits, pw), DIM)
@@ -805,11 +830,14 @@ def run_ui(loader, title, grouped):
                 on = c["uuid"] in picked
                 mark = PICK_ON if on else PICK_OFF
                 ind = "  " if grouped else ""
-                live = "  ● live" if c["live"] else ""
+                tail_bits = []                            # after the label, in order: live, kept
+                if c["live"]: tail_bits.append("● live")
+                if c["kept"]: tail_bits.append("kept")
+                tail = ("  " + "  ".join(tail_bits)) if tail_bits else ""
                 if idx == cur:
                     pre = f" {ind}{mark} {c['rel']:>3} {human(c['size']):>6}  "
-                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - len(pre) - len(live))))
-                    add(y, 0, (pre + lbl + live).ljust(cw), SEL)
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - len(pre) - len(tail))))
+                    add(y, 0, (pre + lbl + tail).ljust(cw), SEL)
                     continue
                 add(y, 0, " " + ind); x = 1 + len(ind)
                 add(y, x, mark, OK if on else DIM); x += 1
@@ -817,8 +845,8 @@ def run_ui(loader, title, grouped):
                 add(y, x, seg, DIM); x += len(seg)
                 sz = f"{human(c['size']):>6}"
                 add(y, x, sz, DIM); x += len(sz) + 2
-                tattr = curses.A_BOLD if c["live"] else 0
-                lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(live))))
+                tattr = DIM if c["kept"] else (curses.A_BOLD if c["live"] else 0)
+                lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(tail))))
                 p = lbl.lower().find(f) if flt else -1
                 if p >= 0:                               # underline the filter match
                     add(y, x, lbl[:p], tattr)
@@ -827,7 +855,8 @@ def run_ui(loader, title, grouped):
                 else:
                     add(y, x, lbl, tattr)
                 x += len(lbl)
-                if c["live"]: add(y, x, "  ● live", OK)
+                for bit in tail_bits:
+                    add(y, x, "  " + bit, OK if bit == "● live" else DIM); x += len(bit) + 2
             if pane:                                     # divider (doubles as scroll track) + detail
                 for j in range(body): add(2 + j, cw + 1, "│", DIM)
                 if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
@@ -847,7 +876,8 @@ def run_ui(loader, title, grouped):
                 x = 1
                 hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
                 if undo: hints.append(("u", "undo"))
-                hints += [("z", "fold"), ("t", "trash"), ("/", "filter"), ("q", "quit")]
+                hints += [("m", "keep"), (".", "hide kept" if show_kept else "show kept"),
+                          ("z", "fold"), ("t", "trash"), ("/", "filter"), ("q", "quit")]
                 for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
                     add(h - 1, x, act, DIM); x += len(act) + 3
@@ -929,12 +959,48 @@ def run_ui(loader, title, grouped):
                     if c["live"]: msg = ("warn", "can't pick a live session")
                     else: picked.discard(c["uuid"]) if c["uuid"] in picked else picked.add(c["uuid"])
                     cur = ci[min(pos + 1, len(ci) - 1)]
+            elif ch == ord("m"):
+                st = load_state()
+                if picked:
+                    now_ts = time.time()
+                    for u in picked: st["keep"][u] = now_ts
+                    write_state(st)
+                    n = len(picked); picked = set()
+                    reload()
+                    msg = ("ok", f"kept {plural(n)} · . shows kept")
+                elif ci and items[cur][0] == "chat":
+                    c = items[cur][1]
+                    if c["kept"]:
+                        st["keep"].pop(c["uuid"], None)
+                        write_state(st)
+                        reload()
+                        msg = ("ok", f"unkept {fit(c['label'], 40)}")
+                    else:
+                        st["keep"][c["uuid"]] = time.time()
+                        write_state(st)
+                        reload()
+                        msg = ("ok", f"kept {fit(c['label'], 40)} · . shows kept")
+            elif ch == ord("."):
+                c = items[cur][1] if ci and items[cur][0] == "chat" else None
+                show_kept = not show_kept
+                if c:                                    # stay on this chat, else the nearest still shown
+                    home = all_vis.index(c)
+                    near = sorted((x for x in all_vis if show_kept or not x["kept"]),
+                                  key=lambda x: (x["proj"] != c["proj"], abs(all_vis.index(x) - home)))
+                    focus = near[0]["uuid"] if near else None
+                else:
+                    cur = top = 0
             elif ch in (ord("d"), 10, 13):
                 if not picked:
                     msg = ("warn", "nothing selected"); continue
                 sel = [by[u] for u in picked if u in by]
                 if confirm_delete(sel):
-                    undo.append([trash_chat(by[u]["dir"], u, by[u]["label"]) for u in list(picked) if u in by])
+                    st = load_state()
+                    dests = [trash_chat(by[u]["dir"], u, by[u]["label"]) for u in list(picked) if u in by]
+                    for u in list(picked):
+                        if u in by: st["keep"].pop(u, None)
+                    write_state(st)
+                    undo.append(dests)
                     reload()
                     n = len(sel)
                     picked = set()
@@ -985,9 +1051,9 @@ def print_help():
     print()
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
-                      ("select", "space pick   a toggle select-all   c clear"),
+                      ("select", "space pick   a toggle select-all   c clear   m keep"),
                       ("act", "p peek   d/enter delete (to trash)   u undo   t trash browser"),
-                      ("view", "s sort recency<->size   / filter   q quit")]:
+                      ("view", "s sort   . kept   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
     print(D(f"the picker confirms before deleting. deletes go to a trash for {TRASH_DAYS} days unless you pass --hard. live sessions are refused."))
@@ -1007,13 +1073,16 @@ def pop_opt(lst, opt):
 def cmd_ls(args):
     args = list(args)
     tmp = pop_flag(args, "--tmp")
+    kept_only = pop_flag(args, "--kept")
     if pop_flag(args, "--all"):
-        print_static(load_all(tmp), grouped=True)
+        chats = load_all(tmp); grouped = True
     else:
         proj = next((a for a in args if not a.startswith("-")), None)
         DIR = resolve_dir(proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
-        print_static(load_chats(DIR), grouped=False)
+        chats = load_chats(DIR); grouped = False
+    chats = [c for c in chats if c["kept"]] if kept_only else [c for c in chats if not c["kept"]]
+    print_static(chats, grouped=grouped)
 
 def cmd_rm(args):
     args = list(args)
@@ -1056,11 +1125,14 @@ def cmd_rm(args):
                 if path else f"{uuid[:8]} ({', '.join(artifact_kinds(DIR, uuid))})")
         print((verb.upper() + " " if apply else f"would {verb} ") + what)
     if apply:
+        st = load_state()
         for uuid, path, label in plan:
             if path and hard: shutil.rmtree(path, ignore_errors=True)
             elif path: trash_move(os.path.basename(path), [path], label, os.path.dirname(path))
             elif hard: delete_chat(DIR, uuid)
             else: trash_chat(DIR, uuid, label)
+            if uuid: st["keep"].pop(uuid, None)
+        write_state(st)
         print("done." if hard else f"done, in trash for {TRASH_DAYS}d (reap restore to undo)")
     else:
         print(f"dry-run, add --apply to {verb}" + ("" if hard else " (--hard to skip trash)"))
