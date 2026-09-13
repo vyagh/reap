@@ -44,7 +44,6 @@ TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
-BIG_CHAT = 10 << 20            # sizes at/above this are highlighted
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
 PANE_MIN = 42                  # ...but only when there's at least this much room for the pane
 LEAF_W = 24                    # pad the project leaf so group stats line up in a real column
@@ -392,13 +391,6 @@ def prune_trash(days=TRASH_DAYS):
             except OSError: continue
         if at < cutoff: shutil.rmtree(d, ignore_errors=True)
 
-def role(label):
-    l = label.lower()
-    if l.startswith("stale"): return "stale"
-    for r in ("planner", "worker", "reviewer", "thinker"):
-        if r in l: return r
-    return "other"
-
 def projlabel(p, wdt):
     return p if len(p) <= wdt else "…" + p[-(wdt - 1):]
 
@@ -457,7 +449,6 @@ def print_static(chats, grouped=False):
 
 def selftest(chats, where):
     print(f"loaded {len(chats)} chats from {where}")
-    print("roles   :", dict(Counter(role(c["label"]) for c in chats)))
     print("live    :", [c["short"] for c in chats if c["live"]] or "none")
     print("projects:", dict(Counter(c["proj"] for c in chats)))
     if chats:
@@ -481,8 +472,6 @@ def run_ui(loader, title, grouped):
         if curses.COLORS >= 256:
             # muted xterm-256 palette, picked to stay legible on BOTH light and dark terminals.
             # A_DIM renders inconsistently across emulators; a real grey is predictable.
-            COL = {"planner": pair(1, 67), "worker": pair(2, 71),
-                   "reviewer": pair(3, 137), "thinker": pair(4, 97)}
             OK = pair(5, 71) | curses.A_BOLD
             YEL = pair(6, 136)
             DANGER = pair(7, 131) | curses.A_BOLD
@@ -491,8 +480,6 @@ def run_ui(loader, title, grouped):
             # explicit fg AND bg, so the cursor row looks right whatever the theme
             SEL = pair(10, 231, 60) | curses.A_BOLD
         else:
-            COL = {"planner": pair(1, curses.COLOR_CYAN), "worker": pair(2, curses.COLOR_GREEN),
-                   "reviewer": pair(3, curses.COLOR_YELLOW), "thinker": pair(4, curses.COLOR_MAGENTA)}
             OK = pair(5, curses.COLOR_GREEN) | curses.A_BOLD
             YEL = pair(6, curses.COLOR_YELLOW)
             DANGER = pair(7, curses.COLOR_RED) | curses.A_BOLD
@@ -754,7 +741,7 @@ def run_ui(loader, title, grouped):
                 if full: add(3, px, fit(full, pw), DIM)
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
                 bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')} · {when}"
-                add(5, px, fit(bits, pw), YEL if c["size"] >= BIG_CHAT else DIM)
+                add(5, px, fit(bits, pw), DIM)
                 if c["live"] and len(bits) + 8 < pw: add(5, px + len(bits) + 1, "● live", OK)
                 add(6, px, RULE * pw, DIM)
                 turns = pcache.get(c["uuid"])            # lazy + cached: smooth to hold j
@@ -799,14 +786,9 @@ def run_ui(loader, title, grouped):
                 add(y, x, mark, OK if on else DIM); x += 1
                 seg = f" {c['rel']:>3} "
                 add(y, x, seg, DIM); x += len(seg)
-                szat = YEL if c["size"] >= BIG_CHAT else DIM
                 sz = f"{human(c['size']):>6}"
-                add(y, x, sz, szat); x += len(sz) + 2
-                r = role(c["label"])
-                if c["live"]: tattr = curses.A_BOLD
-                elif not c["titled"]: tattr = DIM        # unnamed: this is its first message
-                elif r == "stale": tattr = DIM
-                else: tattr = COL.get(r, 0)
+                add(y, x, sz, DIM); x += len(sz) + 2
+                tattr = curses.A_BOLD if c["live"] else 0
                 lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(live))))
                 p = lbl.lower().find(f) if flt else -1
                 if p >= 0:                               # underline the filter match
