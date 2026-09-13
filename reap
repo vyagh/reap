@@ -42,6 +42,8 @@ HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
 TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
+STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
+STATE_PATH = os.path.join(STATE_DIR, "state.json")
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
@@ -120,6 +122,33 @@ def read_json(path, tries=3):
         except (ValueError, OSError):
             if i + 1 < tries: time.sleep(0.03)
     return None
+
+def load_state():
+    """Read-only: never creates the file, a malformed one reads as empty."""
+    o = read_json(STATE_PATH)
+    if not isinstance(o, dict): return {"keep": {}}
+    keep = o.get("keep")
+    return {"keep": keep if isinstance(keep, dict) else {}}
+
+def id_on_disk(cid):
+    """A keep entry is only worth remembering while the chat, or its trash entry,
+    still exists somewhere. Checked live, never against a loaded-in-memory list."""
+    if glob.glob(os.path.join(PROJ, "*", cid + ".jsonl")): return True
+    for d in glob.glob(os.path.join(TRASH, "*")):
+        m = read_json(os.path.join(d, "reap-meta.json"))
+        if isinstance(m, dict) and m.get("uuid") == cid: return True
+    return False
+
+def write_state(state):
+    """Prune + write atomically. Only called for a keep/trash action or `rm --apply`,
+    never on a read-only run."""
+    state = {"keep": dict(state.get("keep", {}))}
+    state["keep"] = {k: v for k, v in state["keep"].items() if id_on_disk(k)}
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = STATE_PATH + f".tmp{os.getpid()}"
+    with open(tmp, "w") as fh: json.dump(state, fh)
+    os.replace(tmp, STATE_PATH)
+    return state
 
 def days_left(at, now):
     return max(0, TRASH_DAYS - int((now - at) / 86400))
