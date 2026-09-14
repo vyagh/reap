@@ -33,7 +33,7 @@ Picker keys (press ? inside for this list):
   u undo last delete   t trash browser (restore / purge)
   s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
 """
-import json, os, re, sys, glob, time, shutil, textwrap
+import fcntl, json, os, re, sys, glob, time, shutil, textwrap
 from collections import Counter
 
 __version__ = "0.4.0"
@@ -366,10 +366,28 @@ def codex_titles():
 def codex_rollout_glob(cid):
     return glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", f"*{cid}*.jsonl"))
 
+def codex_lock_live(cid):
+    """Positive proof only: a lock file whose flock or lockf probe fails EWOULDBLOCK.
+    Missing file or an unreadable one that isn't 'not found' stays protected."""
+    p = os.path.join(CODEX_HOME, "thread-writer-locks", cid + ".lock")
+    try: fd = os.open(p, os.O_RDWR)
+    except FileNotFoundError: return False
+    except OSError: return True
+    live = False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError: live = True
+        try:
+            fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.lockf(fd, fcntl.LOCK_UN)
+        except OSError: live = True
+    finally:
+        os.close(fd)
+    return live
+
 def load_codex(keep, subagents=False):
     """Codex chats across every project: hidden subagent/guardian_review runs unless
-    `subagents`. Grouped later by the same leaf the Claude side resolves to. Live
-    detection lands next commit; every row reads not-live for now."""
+    `subagents`. Grouped later by the same leaf the Claude side resolves to."""
     now = time.time(); titles = codex_titles(); out = []
     for jp in glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", "*.jsonl")):
         m = codex_meta(jp)
@@ -387,7 +405,7 @@ def load_codex(keep, subagents=False):
         out.append({
             "uuid": cid, "short": cid.split("-")[0], "dir": pdir, "proj": pretty(pdir) if pdir else "~",
             "path": jp, "label": label, "titled": titled, "cwd": cwd, "msgs": n,
-            "size": os.path.getsize(jp), "mt": mt, "rel": reltime(mt, now), "live": False,
+            "size": os.path.getsize(jp), "mt": mt, "rel": reltime(mt, now), "live": codex_lock_live(cid),
             "src": "codex", "kept": cid in keep,
         })
     return out
