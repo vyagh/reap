@@ -33,7 +33,7 @@ Picker keys (press ? inside for this list):
   u undo last delete   t trash browser (restore / purge)
   s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
 """
-import fcntl, json, os, re, sys, glob, time, shutil, textwrap
+import fcntl, json, os, re, subprocess, sys, glob, time, shutil, textwrap
 from collections import Counter
 
 __version__ = "0.4.0"
@@ -46,6 +46,7 @@ CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 SKIP_PREFIXES = ("<", "#", "This session is being continued")   # Codex boilerplate first turns
+NO_CODEX_CLI = False    # set from argv in main(): fall back to moving the file ourselves
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
@@ -514,6 +515,67 @@ def trash_move(key, paths, label="", origin=""):
 def trash_chat(DIR, uuid, label=""):
     return trash_move(uuid, chat_artifacts(DIR, uuid), label, DIR)
 
+def run_codex(args):
+    """Every codex call: stdin from /dev/null, output captured, 30s timeout. A timeout
+    counts as failure. Returns (ok, first line of stderr/stdout)."""
+    try:
+        r = subprocess.run(["codex"] + args, stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=30)
+        lines = (r.stderr or r.stdout or "").strip().splitlines()
+        return r.returncode == 0, (lines[0] if lines else "")
+    except FileNotFoundError:
+        return False, "codex not found on PATH"
+    except subprocess.TimeoutExpired:
+        return False, "timed out"
+
+def trash_codex(cid, label, no_cli):
+    """reap never moves a Codex chat's own files: state_5.sqlite's threads.rollout_path
+    would dangle. Shell to `codex archive`, whose own archived_sessions holds the file;
+    the entry holds no files, just where to find it. --no-codex-cli falls back to
+    moving the rollout file into reap's own trash, like a Claude chat."""
+    dest = os.path.join(TRASH, f"{int(time.time() * 1000)}-{cid}")
+    if no_cli:
+        os.makedirs(dest, exist_ok=True)
+        moved = []
+        for src in codex_rollout_glob(cid):
+            base = os.path.basename(src)
+            try:
+                shutil.move(src, os.path.join(dest, base)); moved.append([src, base])
+            except (OSError, shutil.Error): pass
+        with open(os.path.join(dest, "reap-meta.json"), "w") as fh:
+            json.dump({"uuid": cid, "dir": "", "label": label, "at": time.time(),
+                       "moved": moved, "src": "codex", "archived": None}, fh)
+        return dest, None
+    ok, err = run_codex(["archive", cid])
+    if not ok: return None, f"codex archive failed: {err}"
+    os.makedirs(dest, exist_ok=True)
+    archived = next(iter(glob.glob(os.path.join(CODEX_HOME, "archived_sessions", f"*{cid}*.jsonl"))), None)
+    with open(os.path.join(dest, "reap-meta.json"), "w") as fh:
+        json.dump({"uuid": cid, "dir": "", "label": label, "at": time.time(),
+                   "moved": [], "src": "codex", "archived": archived}, fh)
+    return dest, None
+
+def restore_codex(meta, d, no_cli):
+    if meta.get("moved"):                                 # --no-codex-cli fallback entry
+        for src, base in meta["moved"]:
+            s = os.path.join(d, base)
+            if os.path.exists(s) and not os.path.exists(src):
+                os.makedirs(os.path.dirname(src), exist_ok=True)
+                try: shutil.move(s, src)
+                except (OSError, shutil.Error): pass
+        shutil.rmtree(d, ignore_errors=True)
+        return meta
+    ok, _ = run_codex(["unarchive", meta.get("uuid", "")])
+    if not ok: return None                                # entry stays, so the user can retry
+    shutil.rmtree(d, ignore_errors=True)
+    return meta
+
+def purge_entry(m, no_cli):
+    """Purge (trash 'x', 'E', the 7-day prune): permanent, so the entry always drops."""
+    if m.get("src") == "codex" and not m.get("moved") and not no_cli:
+        run_codex(["delete", m.get("uuid", ""), "--force"])
+    shutil.rmtree(m["_dir"], ignore_errors=True)
+
 def restore_entry(d):
     """Move a trash entry's artifacts back to their original paths; drop the entry.
     Validates the (possibly tampered) manifest: base must be a bare name inside the entry,
@@ -523,6 +585,8 @@ def restore_entry(d):
         for sub in ("jobs", "file-history", "session-env", "tasks"))
     meta = read_json(os.path.join(d, "reap-meta.json"))
     if not isinstance(meta, dict): return None
+    if meta.get("src") == "codex":
+        return restore_codex(meta, d, NO_CODEX_CLI)
     for src, base in meta.get("moved", []):
         if not isinstance(src, str) or base != os.path.basename(base): continue
         rp = os.path.realpath(src)
@@ -536,13 +600,19 @@ def restore_entry(d):
     return meta
 
 def trash_list():
-    """Trash entries newest-first, each meta annotated with _dir and _size."""
+    """Trash entries newest-first, each meta annotated with _dir and _size. A Codex
+    entry with no moved files shows the archived file's size, read live."""
     out = []
     for d in glob.glob(os.path.join(TRASH, "*")):
         if not os.path.isdir(d): continue
         m = read_json(os.path.join(d, "reap-meta.json"))
         if not isinstance(m, dict): continue
-        m["_dir"] = d; m["_size"] = dirsize(d)
+        m["_dir"] = d
+        if m.get("src") == "codex" and not m.get("moved"):
+            arch = m.get("archived")
+            m["_size"] = os.path.getsize(arch) if arch and os.path.exists(arch) else 0
+        else:
+            m["_size"] = dirsize(d)
         out.append(m)
     out.sort(key=lambda m: m.get("at", 0), reverse=True)
     return out
@@ -552,7 +622,7 @@ def trash_stat():
     ents = trash_list()
     return len(ents), sum(e["_size"] for e in ents)
 
-def prune_trash(days=TRASH_DAYS):
+def prune_trash(days=TRASH_DAYS, no_cli=False):
     """Lazy retention: drop entries older than `days`. Runs once at launch, no daemon, ~ms."""
     if not os.path.isdir(TRASH): return
     cutoff = time.time() - days * 86400
@@ -562,7 +632,10 @@ def prune_trash(days=TRASH_DAYS):
         else:
             try: at = os.path.getmtime(d)
             except OSError: continue
-        if at < cutoff: shutil.rmtree(d, ignore_errors=True)
+        if at < cutoff:
+            if isinstance(m, dict):
+                m["_dir"] = d; purge_entry(m, no_cli)
+            else: shutil.rmtree(d, ignore_errors=True)
 
 def projlabel(p, wdt):
     return p if len(p) <= wdt else "…" + p[-(wdt - 1):]
@@ -821,13 +894,13 @@ def run_ui(loader, title, grouped):
                 elif ents and k == ord("x"):
                     if confirm_ask(f"purge 1 chat ({human(ents[sel]['_size'])}) permanently?",
                                    "delete forever · other cancels"):
-                        shutil.rmtree(ents[sel]["_dir"], ignore_errors=True)
+                        purge_entry(ents[sel], NO_CODEX_CLI)
                         ch_reload = 1; ents = trash_list()
                 elif ents and k == ord("E"):
                     freed = human(sum(e["_size"] for e in ents))
                     if confirm_ask(f"empty trash: {plural(len(ents))}, {freed}, forever?",
                                    "frees the disk · gone for good · other cancels"):
-                        for e in ents: shutil.rmtree(e["_dir"], ignore_errors=True)
+                        for e in ents: purge_entry(e, NO_CODEX_CLI)
                         ch_reload = 1; ents = trash_list()
 
         while True:
@@ -1138,16 +1211,25 @@ def run_ui(loader, title, grouped):
                     msg = ("warn", "nothing selected"); continue
                 sel = [by[u] for u in picked if u in by]
                 if confirm_delete(sel):
+                    dests, fail = [], None
                     st = load_state()
-                    dests = [trash_chat(by[u]["dir"], u, by[u]["label"]) for u in list(picked) if u in by]
                     for u in list(picked):
-                        if u in by: st["keep"].pop(u, None)
-                    write_state(st)
+                        if u not in by: continue
+                        c = by[u]
+                        if c.get("src") == "codex":
+                            dest, err = trash_codex(c["uuid"], c["label"], NO_CODEX_CLI)
+                            if err: fail = err; continue
+                        else:
+                            dest = trash_chat(c["dir"], u, c["label"])
+                        dests.append(dest); st["keep"].pop(u, None)
+                    if dests: write_state(st)
                     undo.append(dests)
                     reload()
-                    n = len(sel)
+                    n = len(dests)
                     picked = set()
-                    msg = ("ok", f"trashed {plural(n)} · u undo · t trash")
+                    if fail: msg = ("warn", fail)
+                    elif n: msg = ("ok", f"trashed {plural(n)} · u undo · t trash")
+                    else: msg = ("warn", "nothing trashed")
                 else:
                     msg = ("warn", "cancelled")
 
@@ -1285,7 +1367,7 @@ def cmd_trash(args):
     args = list(args)
     if pop_flag(args, "--empty"):
         ents = trash_list()
-        for e in ents: shutil.rmtree(e["_dir"], ignore_errors=True)
+        for e in ents: purge_entry(e, NO_CODEX_CLI)
         print(f"emptied trash, purged {len(ents)} chats"); return
     ents = trash_list()
     if not ents: print("trash is empty"); return
@@ -1316,12 +1398,14 @@ def cmd_restore(args):
         print(f"restored {hits[0]['uuid'][:8]}  {(m.get('label') or '') if m else '(failed)'}")
 
 def main():
+    global NO_CODEX_CLI
     argv = sys.argv[1:]
     if "--version" in argv or "-V" in argv:
         print(f"reap {__version__}"); return
     if "-h" in argv or "--help" in argv:
         print_help(); return
-    prune_trash()                                        # lazy retention, cheap, no daemon
+    NO_CODEX_CLI = pop_flag(argv, "--no-codex-cli")
+    prune_trash(no_cli=NO_CODEX_CLI)                      # lazy retention, cheap, no daemon
     sub = argv[0] if argv and not argv[0].startswith("-") else None
     if sub == "ls": return cmd_ls(argv[1:])
     if sub == "rm": return cmd_rm(argv[1:])
