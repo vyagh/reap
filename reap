@@ -42,8 +42,10 @@ HOME = os.path.expanduser("~")
 PROJ = os.path.join(HOME, ".claude", "projects")
 TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
+SKIP_PREFIXES = ("<", "#", "This session is being continued")   # Codex boilerplate first turns
 RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
@@ -136,6 +138,7 @@ def id_on_disk(cid):
     """A keep entry is only worth remembering while the chat, or its trash entry,
     still exists somewhere. Checked live, never against a loaded-in-memory list."""
     if glob.glob(os.path.join(PROJ, "*", cid + ".jsonl")): return True
+    if codex_rollout_glob(cid): return True
     for d in glob.glob(os.path.join(TRASH, "*")):
         m = read_json(os.path.join(d, "reap-meta.json"))
         if isinstance(m, dict) and m.get("uuid") == cid: return True
@@ -249,9 +252,10 @@ def meta(path):
     except OSError: pass
     return title, prompt, cwd, n
 
-def peek_turns(path, cap=250, text_only=False):
+def peek_turns(path, cap=250, text_only=False, src="claude"):
     """Read a transcript into a list of (who, text) message turns. Read-only.
     text_only skips tool calls/results: a clean human/assistant read for the preview."""
+    if src == "codex": return peek_turns_codex(path, cap)
     out = []
     try:
         with open(path) as fh:
@@ -277,9 +281,119 @@ def peek_turns(path, cap=250, text_only=False):
     except OSError: pass
     return out
 
-def load_chats(DIR):
+def peek_turns_codex(path, cap=250):
+    """Same shape as peek_turns, read from a Codex rollout: response_item message
+    records, role user -> you, role assistant -> codex."""
+    out = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                try: o = json.loads(line)
+                except Exception: continue
+                if o.get("type") != "response_item": continue
+                p = o.get("payload") or {}
+                if p.get("type") != "message" or p.get("role") not in ("user", "assistant"): continue
+                parts = [b.get("text", "") for b in p.get("content", [])
+                         if isinstance(b, dict) and b.get("type") in ("input_text", "output_text", "text")]
+                text = " ".join(s for s in parts if s).strip()
+                if not text: continue
+                if p["role"] == "user" and text.startswith(SKIP_PREFIXES): continue
+                out.append(("you" if p["role"] == "user" else "codex", clean(" ".join(text.split()))))
+                if len(out) >= cap: break
+    except OSError: pass
+    return out
+
+def codex_meta(path):
+    """First line only: a session_meta record. None if that's not what it is."""
+    try:
+        with open(path) as fh: line = fh.readline()
+    except OSError: return None
+    try: o = json.loads(line)
+    except Exception: return None
+    if o.get("type") != "session_meta": return None
+    p = o.get("payload") or {}
+    if not p.get("id"): return None
+    return {"id": p["id"], "cwd": p.get("cwd"), "thread_source": p.get("thread_source")}
+
+def codex_last_cwd(path, tail=65536):
+    """Folder of the newest turn: codex resumes a chat where it was last used, which
+    can differ from the session_meta cwd. Reads only the file's tail."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - tail))
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError: return None
+    for line in reversed(lines):
+        if '"type":"turn_context"' not in line: continue
+        try: return (json.loads(line).get("payload") or {}).get("cwd")
+        except Exception: continue
+    return None
+
+def codex_scan(path, cap=400):
+    """(title_or_None, msgs) from the first non-skipped user prompts, capped at `cap` lines."""
+    title = None; n = 0
+    try:
+        with open(path) as fh:
+            for i, line in enumerate(fh):
+                if i >= cap: break
+                if '"role":"user"' not in line and '"role": "user"' not in line: continue
+                try: o = json.loads(line)
+                except Exception: continue
+                if o.get("type") != "response_item": continue
+                p = o.get("payload") or {}
+                if p.get("role") != "user": continue
+                parts = [b.get("text", "") for b in p.get("content", [])
+                         if isinstance(b, dict) and b.get("type") in ("input_text", "text")]
+                text = clean(" ".join(" ".join(parts).split()))
+                if not text or text.startswith(SKIP_PREFIXES): continue
+                n += 1
+                if title is None: title = text
+    except OSError: pass
+    return title, n
+
+def codex_titles():
+    """id -> thread_name from session_index.jsonl, last line for an id wins."""
+    titles = {}
+    try:
+        with open(os.path.join(CODEX_HOME, "session_index.jsonl")) as fh:
+            for line in fh:
+                try: o = json.loads(line)
+                except Exception: continue
+                if o.get("id") and o.get("thread_name"): titles[o["id"]] = o["thread_name"]
+    except OSError: pass
+    return titles
+
+def codex_rollout_glob(cid):
+    return glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", f"*{cid}*.jsonl"))
+
+def load_codex(keep, subagents=False):
+    """Codex chats across every project: hidden subagent/guardian_review runs unless
+    `subagents`. Grouped later by the same leaf the Claude side resolves to. Live
+    detection lands next commit; every row reads not-live for now."""
+    now = time.time(); titles = codex_titles(); out = []
+    for jp in glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", "*.jsonl")):
+        m = codex_meta(jp)
+        if not m: continue
+        if not subagents and m["thread_source"] in ("subagent", "guardian_review"): continue
+        cid = m["id"]
+        title = titles.get(cid); titled = bool(title)
+        if not title:
+            title, n = codex_scan(jp)
+        else:
+            _, n = codex_scan(jp)
+        label = clean(title) if title else "(untitled)"
+        mt = os.path.getmtime(jp); cwd = codex_last_cwd(jp) or m["cwd"]
+        pdir = os.path.join(PROJ, dirname_for(cwd)) if cwd else None
+        out.append({
+            "uuid": cid, "short": cid.split("-")[0], "dir": pdir, "proj": pretty(pdir) if pdir else "~",
+            "path": jp, "label": label, "titled": titled, "cwd": cwd, "msgs": n,
+            "size": os.path.getsize(jp), "mt": mt, "rel": reltime(mt, now), "live": False,
+            "src": "codex", "kept": cid in keep,
+        })
+    return out
+
+def load_claude_chats(DIR, keep):
     live = live_session_ids()
-    keep = load_state()["keep"]
     now = time.time()
     proj = pretty(DIR)
     chats = []
@@ -298,19 +412,27 @@ def load_chats(DIR):
             "cwd": cwd,                                  # real path, so headers aren't dash-mangled
             "msgs": n, "size": size,
             "mt": mt, "rel": reltime(mt, now), "live": uuid in live,
-            "kept": uuid in keep,
+            "src": "claude", "kept": uuid in keep,
         })
+    return chats
+
+def load_chats(DIR, subagents=False):
+    keep = load_state()["keep"]
+    chats = load_claude_chats(DIR, keep)
+    chats += [c for c in load_codex(keep, subagents) if c["dir"] == DIR]
     chats.sort(key=lambda c: c["mt"], reverse=True)
     return chats
 
-def load_all(tmp=False):
+def load_all(tmp=False, subagents=False):
     """Ephemeral /tmp scratchpad sessions are hidden by default: nothing you'd
     want to keep lives there, and their uuid-laden paths swamp the group headers."""
+    keep = load_state()["keep"]
     chats = []
     for d in sorted(glob.glob(os.path.join(PROJ, "*"))):
         if not under_proj(d): continue
         if not tmp and os.path.basename(d).startswith("-tmp-"): continue
-        chats += load_chats(d)
+        chats += load_claude_chats(d, keep)
+    chats += load_codex(keep, subagents)
     recent = {}
     for c in chats:
         recent[c["proj"]] = max(recent.get(c["proj"], 0), c["mt"])
@@ -476,16 +598,18 @@ def print_static(chats, grouped=False):
     for c in chats:
         if grouped and c["proj"] != last:
             last = c["proj"]; print(f"\n# {c['proj']}")
+        src = "  codex" if c.get("src") == "codex" else ""
         live = "  * live" if c["live"] else ""
-        print(f"  {c['rel']:>4} {human(c['size']):>6} {c['msgs']:>5}  {c['label'][:44]:44} {c['short']}{live}")
+        print(f"  {c['rel']:>4} {human(c['size']):>6} {c['msgs']:>5}  {c['label'][:44]:44} {c['short']}{src}{live}")
     print(f"\n{len(chats)} chats - {human(sum(c['size'] for c in chats))} total")
 
 def selftest(chats, where):
     print(f"loaded {len(chats)} chats from {where}")
     print("live    :", [c["short"] for c in chats if c["live"]] or "none")
     print("projects:", dict(Counter(c["proj"] for c in chats)))
+    print("src     :", dict(Counter(c.get("src", "claude") for c in chats)))
     if chats:
-        t = peek_turns(chats[0]["path"])
+        t = peek_turns(chats[0]["path"], src=chats[0].get("src", "claude"))
         print(f"peek({chats[0]['short']}): {len(t)} turns, first =", (t[0] if t else "none"))
     print_static(chats[:6], grouped=True)
 
@@ -575,7 +699,7 @@ def run_ui(loader, title, grouped):
             stdscr.refresh(); stdscr.getch()
 
         def do_peek(c):                                  # read-only transcript preview
-            turns = peek_turns(c["path"])
+            turns = peek_turns(c["path"], src=c.get("src", "claude"))
             lines = []
             w0 = stdscr.getmaxyx()[1]
             for who, text in turns:
@@ -800,7 +924,7 @@ def run_ui(loader, title, grouped):
                 add(6, px, RULE * pw, DIM)
                 turns = pcache.get(c["uuid"])            # lazy + cached: smooth to hold j
                 if turns is None:
-                    turns = pcache[c["uuid"]] = peek_turns(c["path"], cap=16, text_only=True)
+                    turns = pcache[c["uuid"]] = peek_turns(c["path"], cap=16, text_only=True, src=c.get("src", "claude"))
                 ty = 8
                 if not turns: add(ty, px, "(no readable messages)", DIM)
                 for who, text in turns:
@@ -830,7 +954,8 @@ def run_ui(loader, title, grouped):
                 on = c["uuid"] in picked
                 mark = PICK_ON if on else PICK_OFF
                 ind = "  " if grouped else ""
-                tail_bits = []                            # after the label, in order: live, kept
+                tail_bits = []                            # after the label, in order: codex, live, kept
+                if c.get("src") == "codex": tail_bits.append("codex")
                 if c["live"]: tail_bits.append("● live")
                 if c["kept"]: tail_bits.append("kept")
                 tail = ("  " + "  ".join(tail_bits)) if tail_bits else ""
@@ -1073,14 +1198,15 @@ def pop_opt(lst, opt):
 def cmd_ls(args):
     args = list(args)
     tmp = pop_flag(args, "--tmp")
+    subagents = pop_flag(args, "--subagents")
     kept_only = pop_flag(args, "--kept")
     if pop_flag(args, "--all"):
-        chats = load_all(tmp); grouped = True
+        chats = load_all(tmp, subagents); grouped = True
     else:
         proj = next((a for a in args if not a.startswith("-")), None)
         DIR = resolve_dir(proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
-        chats = load_chats(DIR); grouped = False
+        chats = load_chats(DIR, subagents); grouped = False
     chats = [c for c in chats if c["kept"]] if kept_only else [c for c in chats if not c["kept"]]
     print_static(chats, grouped=grouped)
 
@@ -1187,15 +1313,16 @@ def main():
     rest = list(argv)
     st = pop_flag(rest, "--selftest")
     tmp = pop_flag(rest, "--tmp")                        # include /tmp scratchpad sessions
+    subagents = pop_flag(rest, "--subagents")
     if pop_flag(rest, "--all"):
-        loader, title, grouped, where = ((lambda t=tmp: load_all(t)), "all projects", True,
+        loader, title, grouped, where = ((lambda t=tmp, s=subagents: load_all(t, s)), "all projects", True,
                                          "all projects")
     else:
         proj = next((a for a in rest if not a.startswith("-")), None)
         DIR = resolve_dir(proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
         title = os.getcwd() if proj is None else pretty(DIR)
-        loader, grouped, where = (lambda d=DIR: load_chats(d)), False, title
+        loader, grouped, where = (lambda d=DIR, s=subagents: load_chats(d, s)), False, title
 
     if st: selftest(loader(), where)
     elif not sys.stdout.isatty(): print_static(loader(), grouped)
