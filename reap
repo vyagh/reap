@@ -31,7 +31,7 @@ Picker keys (press ? inside for this list):
   space pick (skips live)   a toggle select-all   c clear
   p peek (read-only preview)   d / enter delete (to trash, asks to confirm)
   u undo last delete   t trash browser (restore / purge)
-  s sort recency<->size   / filter (title/uuid/workspace)   ? keys   q quit
+  s sort recency<->size   / filter (title/uuid/workspace/agent)   ? keys   q quit
 """
 import fcntl, json, os, re, subprocess, sys, glob, time, shutil, textwrap
 from collections import Counter
@@ -73,7 +73,7 @@ HELP_LINES = [
     ("", "  s              sort: recency ↔ size"),
     ("", "  .              show / hide again hidden chats"),
     ("", "  ●              running, · otherwise"),
-    ("", "  /              filter title · uuid · workspace"),
+    ("", "  /              filter title · uuid · workspace · agent"),
     ("", "  q              quit"),
     ("", ""),
     ("D", "delete moves the chat to a trash, recoverable for 7 days. hide only hides it."),
@@ -890,11 +890,19 @@ def run_ui(loader, title, grouped):
             box(y0, x0, hh, ww, f"delete {plural(n)} · {freed}", curses.A_BOLD)
             for j in range(shown):
                 c = sel[j]
+                src = c.get("src", "claude")
+                extra = len(src) + 2 if src != "claude" else 0
                 add(y0 + 2 + j, x0 + 3, f"{human(c['size']):>6}", DIM)
-                add(y0 + 2 + j, x0 + 11, fit(c["label"], ww - 14))
+                add(y0 + 2 + j, x0 + 11, fit(c["label"], ww - 14 - extra))
+                if extra: add(y0 + 2 + j, x0 + ww - 2 - len(src), src, DIM)
             if more: add(y0 + 2 + shown, x0 + 11, f"… and {more} more", DIM)
             add(y0 + hh - 2, x0 + 3, "y", OK)
-            add(y0 + hh - 2, x0 + 5, f"move to trash · undo for {TRASH_DAYS}d · other key cancels", DIM)
+            other_src = sorted({c.get("src", "claude") for c in sel} - {"claude"})
+            if other_src:
+                hint = f"move to trash · {', '.join(other_src)} chats via codex archive · undo for {TRASH_DAYS}d"
+            else:
+                hint = f"move to trash · undo for {TRASH_DAYS}d · other key cancels"
+            add(y0 + hh - 2, x0 + 5, hint, DIM)
             stdscr.refresh()
             return stdscr.getch() in (ord("y"), ord("Y"))
 
@@ -951,7 +959,8 @@ def run_ui(loader, title, grouped):
             ordered = order(chats, sort_mode, grouped)
             f = flt.lower()
             vis = ordered if not flt else [c for c in ordered
-                                           if f in c["label"].lower() or f in c["uuid"] or f in c["proj"].lower()]
+                                           if f in c["label"].lower() or f in c["uuid"] or f in c["proj"].lower()
+                                           or f == c.get("src", "claude")]
             all_vis = vis                                # keeps hidden chats: a project can be all-hidden, . needs the nearest
             if not show_kept: vis = [c for c in vis if not c["kept"]]
 
@@ -1074,9 +1083,18 @@ def run_ui(loader, title, grouped):
                 leaf, parent = split_path(c["cwd"], "")
                 full = (parent + "/" + leaf) if parent else leaf
                 if full: add(3, px, fit(full, pw), DIM)
+                state = None
                 if c["kept"]:
                     kd = time.strftime("%b %d", time.localtime(keep_map.get(c["uuid"], 0)))
-                    add(4, px, fit(f"hidden {kd} · h brings it back", pw), DIM)
+                    state = (f"hidden {kd} · h brings it back", DIM)
+                elif c["live"]:
+                    state = ("running now", LIVE)
+                src = c.get("src", "claude")
+                add(4, px, src, DIM)
+                if state:
+                    txt, attr = state
+                    add(4, px + len(src), " · ", DIM)
+                    add(4, px + len(src) + 3, fit(txt, max(0, pw - len(src) - 3)), attr)
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
                 bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')} · {when}"
                 add(5, px, fit(bits, pw), DIM)
@@ -1094,7 +1112,6 @@ def run_ui(loader, title, grouped):
                         if ty >= h - 3: break
                         add(ty, px + 2, ln, DIM); ty += 1
                     ty += 1
-                add(h - 3, px, "p full · space pick · d delete", DIM)
 
             if not vis:
                 add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
@@ -1120,23 +1137,19 @@ def run_ui(loader, title, grouped):
                 elif c["live"]: mark, mattr = "●", LIVE
                 else: mark, mattr = "·", DIM
                 ind = "  " if grouped else ""
-                tail_bits = []                            # after the label, in order: codex
-                if c.get("src") == "codex": tail_bits.append("codex")
-                tail = ("  " + "  ".join(tail_bits)) if tail_bits else ""
                 if idx == cur and band:
                     x = 1 + len(ind)
                     add(y, x, " " * (cw - x), TINT)
                     add(y, x, mark, TINTOK if on else TINTLIVE if c["live"] else TINT); x += 1
                     seg = f" {c['rel']:>3} {human(c['size']):>6}  "
                     add(y, x, seg, TINT); x += len(seg)
-                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(tail))))
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x)))
                     add(y, x, lbl, TINT | curses.A_BOLD)
-                    add(y, x + len(lbl), tail, TINT)
                     continue
                 if idx == cur:
                     pre = f" {ind}{mark} {c['rel']:>3} {human(c['size']):>6}  "
-                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - len(pre) - len(tail))))
-                    add(y, 0, (pre + lbl + tail).ljust(cw), SEL)
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - len(pre))))
+                    add(y, 0, (pre + lbl).ljust(cw), SEL)
                     continue
                 add(y, 0, " " + ind); x = 1 + len(ind)
                 dim = DIM
@@ -1150,7 +1163,7 @@ def run_ui(loader, title, grouped):
                 sz = f"{human(c['size']):>6}"
                 add(y, x, sz, dim); x += len(sz) + 2
                 tattr = dim if c["kept"] else 0
-                lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(tail))))
+                lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x)))
                 p = lbl.lower().find(f) if flt else -1
                 if p >= 0:                               # underline the filter match
                     add(y, x, lbl[:p], tattr)
@@ -1158,9 +1171,6 @@ def run_ui(loader, title, grouped):
                     add(y, x + p + len(f), lbl[p + len(f):], tattr)
                 else:
                     add(y, x, lbl, tattr)
-                x += len(lbl)
-                for bit in tail_bits:
-                    add(y, x, "  " + bit, dim); x += len(bit) + 2
             if pane:                                     # divider (doubles as scroll track) + detail
                 for j in range(body): add(2 + j, cw + 1, "│", DIM)
                 if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
