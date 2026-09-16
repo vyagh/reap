@@ -1202,13 +1202,13 @@ def run_ui(loader, title, grouped):
                 hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
                 if undo: hints.append(("u", "undo"))
                 hints += [("h", "hide"), (".", "hide again" if show_kept else "show hidden"),
-                          ("z", "fold"), ("t", "trash"), ("/", "filter"), ("q", "quit")]
+                          ("t", "trash"), ("/", "filter"), ("q", "quit")]
                 for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
                     add(h - 1, x, act, DIM); x += len(act) + 3
                 if picked:
                     ptxt = f"{PICK_ON} {len(picked)} picked · {human(psz)}"
-                    add(h - 1, max(x + 1, w - len(ptxt) - 1), ptxt, OK)
+                    add(h - 1, max(x + 1, cw - len(ptxt)), ptxt, OK)
             stdscr.refresh()
 
             ch = stdscr.getch()
