@@ -63,7 +63,7 @@ HELP_LINES = [
     ("", "  a / c          toggle select-all shown / clear"),
     ("", "  p              peek: read-only preview"),
     ("", "  d or enter     delete selected → trash (confirms first)"),
-    ("", "  m              keep: hide until you ask, never deleted"),
+    ("", "  h              hide: out of the list until you ask, never deleted (on picked hidden chats: unhide)"),
     ("", ""),
     ("H", "trash · undo"),
     ("", "  u              undo the last delete"),
@@ -71,11 +71,11 @@ HELP_LINES = [
     ("", ""),
     ("H", "view"),
     ("", "  s              sort: recency ↔ size"),
-    ("", "  .              show / hide kept chats"),
+    ("", "  .              show / hide again hidden chats"),
     ("", "  /              filter title · uuid · workspace"),
     ("", "  q              quit"),
     ("", ""),
-    ("D", "delete moves the chat to a trash, recoverable for 7 days. keep only hides it."),
+    ("D", "delete moves the chat to a trash, recoverable for 7 days. hide only hides it."),
 ]
 
 def under_proj(d):
@@ -900,7 +900,7 @@ def run_ui(loader, title, grouped):
                 stdscr.erase()
                 h, w = stdscr.getmaxyx()
                 add(0, 1, " trash ", curses.A_REVERSE | curses.A_BOLD)
-                info = f"{plural(len(ents))} · {human(sum(e['_size'] for e in ents))} · kept {TRASH_DAYS}d"
+                info = f"{plural(len(ents))} · {human(sum(e['_size'] for e in ents))} · recoverable {TRASH_DAYS}d"
                 add(0, max(1, w - len(info) - 2), info, DIM)
                 add(1, 0, RULE * (w - 1), DIM)
                 page = max(1, h - 4)
@@ -1009,7 +1009,7 @@ def run_ui(loader, title, grouped):
                 add(0, max(1, cw - used - len(ti) - 3), ti, YEL)
                 used += len(ti) + 3
             if kept_count:
-                ki = f"{kept_count} kept"
+                ki = f"{kept_count} hidden"
                 add(0, max(1, cw - used - len(ki) - 3), ki, DIM)
             add(1, 0, RULE * rw, DIM)
 
@@ -1071,7 +1071,7 @@ def run_ui(loader, title, grouped):
                 if full: add(3, px, fit(full, pw), DIM)
                 if c["kept"]:
                     kd = time.strftime("%b %d", time.localtime(keep_map.get(c["uuid"], 0)))
-                    add(4, px, fit(f"kept {kd} · m again to unkeep", pw), DIM)
+                    add(4, px, fit(f"hidden {kd} · h brings it back", pw), DIM)
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
                 bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')} · {when}"
                 add(5, px, fit(bits, pw), DIM)
@@ -1114,10 +1114,9 @@ def run_ui(loader, title, grouped):
                 on = c["uuid"] in picked
                 mark = PICK_ON if on else PICK_OFF
                 ind = "  " if grouped else ""
-                tail_bits = []                            # after the label, in order: codex, live, kept
+                tail_bits = []                            # after the label, in order: codex, live
                 if c.get("src") == "codex": tail_bits.append("codex")
                 if c["live"]: tail_bits.append("● live")
-                if c["kept"]: tail_bits.append("kept")
                 tail = ("  " + "  ".join(tail_bits)) if tail_bits else ""
                 if idx == cur and band:
                     x = 1 + len(ind)
@@ -1167,7 +1166,7 @@ def run_ui(loader, title, grouped):
                 add(h - 1, 1, "/", ACC | curses.A_BOLD)
                 add(h - 1, 2, flt, curses.A_BOLD)
                 add(h - 1, 2 + len(flt), "▏", DIM)
-                mtxt = f"{len(vis)} match{'es' if len(vis) != 1 else ''} · enter keep · esc clear"
+                mtxt = f"{len(vis)} match{'es' if len(vis) != 1 else ''} · enter apply · esc clear"
                 add(h - 1, max(1, w - len(mtxt) - 1), mtxt, DIM)
             elif msg:
                 add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
@@ -1175,7 +1174,7 @@ def run_ui(loader, title, grouped):
                 x = 1
                 hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
                 if undo: hints.append(("u", "undo"))
-                hints += [("m", "keep"), (".", "hide kept" if show_kept else "show kept"),
+                hints += [("h", "hide"), (".", "hide again" if show_kept else "show hidden"),
                           ("z", "fold"), ("t", "trash"), ("/", "filter"), ("q", "quit")]
                 for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
@@ -1263,27 +1262,40 @@ def run_ui(loader, title, grouped):
                     if c["live"]: msg = ("warn", "can't pick a live session")
                     else: picked.discard(c["uuid"]) if c["uuid"] in picked else picked.add(c["uuid"])
                     cur = ci[min(pos + 1, len(ci) - 1)]
-            elif ch == ord("m"):
+            elif ch == ord("h"):
                 st = load_state()
                 if picked:
                     now_ts = time.time()
-                    for u in picked: st["keep"][u] = now_ts
+                    hidden = [u for u in picked if u in by and by[u]["kept"]]
+                    if len(hidden) == len(picked):
+                        for u in hidden:
+                            st["keep"].pop(u, None)
+                            keep_map.pop(u, None)
+                            by[u]["kept"] = False
+                        msg = ("ok", f"back in the list: {plural(len(hidden))}")
+                    else:
+                        fresh = [u for u in picked if u in by and not by[u]["kept"]]
+                        for u in fresh:
+                            st["keep"][u] = now_ts
+                            keep_map[u] = now_ts
+                            by[u]["kept"] = True
+                        msg = ("ok", f"hid {plural(len(fresh))} · . shows hidden")
                     write_state(st)
-                    n = len(picked); picked = set()
-                    reload()
-                    msg = ("ok", f"kept {plural(n)} · . shows kept")
+                    picked = set()
                 elif ci and items[cur][0] == "chat":
                     c = items[cur][1]
                     if c["kept"]:
                         st["keep"].pop(c["uuid"], None)
+                        keep_map.pop(c["uuid"], None)
                         write_state(st)
-                        reload()
-                        msg = ("ok", f"unkept {fit(c['label'], 40)}")
+                        c["kept"] = False
+                        msg = ("ok", f"back in the list: {fit(c['label'], 40)}")
                     else:
-                        st["keep"][c["uuid"]] = time.time()
+                        now_ts = time.time()
+                        st["keep"][c["uuid"]] = keep_map[c["uuid"]] = now_ts
                         write_state(st)
-                        reload()
-                        msg = ("ok", f"kept {fit(c['label'], 40)} · . shows kept")
+                        c["kept"] = True
+                        msg = ("ok", f"hidden {fit(c['label'], 40)} · . shows hidden")
             elif ch == ord("."):
                 c = items[cur][1] if ci and items[cur][0] == "chat" else None
                 show_kept = not show_kept
@@ -1364,9 +1376,9 @@ def print_help():
     print()
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
-                      ("select", "space pick   a toggle select-all   c clear   m keep"),
+                      ("select", "space pick   a toggle select-all   c clear   h hide"),
                       ("act", "p peek   d/enter delete (to trash)   u undo   t trash browser"),
-                      ("view", "s sort   . kept   / filter   q quit")]:
+                      ("view", "s sort   . hidden   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
     print(D(f"the picker confirms before deleting. deletes go to a trash for {TRASH_DAYS} days unless you pass --hard. live sessions are refused."))
@@ -1387,7 +1399,7 @@ def cmd_ls(args):
     args = list(args)
     tmp = pop_flag(args, "--tmp")
     subagents = pop_flag(args, "--subagents")
-    kept_only = pop_flag(args, "--kept")
+    kept_only = pop_flag(args, "--hidden")
     if pop_flag(args, "--all"):
         chats = load_all(tmp, subagents); grouped = True
     else:
