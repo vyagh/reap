@@ -1011,20 +1011,31 @@ def run_ui(loader, title, grouped):
             px = cw + 3                                  # detail-pane left column
             rw = w - 1                                   # rules span the whole frame
             add(0, 1, " reap ", SEL)
-            add(0, 8, projlabel(title, max(8, cw - 40)), DIM)
-            stats = f"{plural(len(chats))} · {human(total)}"
-            badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
-            add(0, max(1, cw - len(stats) - len(badge)), stats, DIM)
-            if badge: add(0, max(1, cw - len(badge) + 1), badge, ACC | curses.A_BOLD)
             kept_count = sum(1 for c in chats if c["kept"])
-            used = len(stats) + len(badge)
-            if tn:                                       # disk parked in trash, never hide this
-                ti = f"trash {human(tb)}"
-                add(0, max(1, cw - used - len(ti) - 3), ti, YEL)
-                used += len(ti) + 3
-            if kept_count:
-                ki = f"{kept_count} hidden"
-                add(0, max(1, cw - used - len(ki) - 3), ki, DIM)
+            filtered = flt and not filtering
+            if filtered:
+                shown_n = sum(1 for c in chats if show_kept or not c["kept"])
+                right = [(f"{len(vis)} of {plural(shown_n)}", DIM)]
+            else:
+                right = []
+                if kept_count: right.append((f"{kept_count} hidden", DIM))
+                if tn: right.append((f"trash {human(tb)}", YEL))
+            rtxt = "   ".join(t for t, _ in right)
+            x_right = max(8, cw - len(rtxt))
+            x = x_right
+            for j, (t, attr) in enumerate(right):
+                if j: add(0, x, "   ", DIM); x += 3
+                add(0, x, t, attr); x += len(t)
+
+            badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
+            avail = max(0, x_right - 3 - 8)
+            total_txt = f" · {human(total)}"
+            scope = projlabel(title, max(8, avail - len(total_txt) - len(badge)))
+            left = scope + total_txt
+            if len(left) + len(badge) > avail:
+                left = projlabel(title, max(8, avail - len(badge)))
+            add(0, 8, left, DIM)
+            if badge: add(0, 8 + len(left), badge, ACC | curses.A_BOLD)
             add(1, 0, RULE * rw, DIM)
 
             def draw_hdr(y, it, sel=False):
