@@ -51,7 +51,6 @@ RULE, BAR, PICK_ON, PICK_OFF = "─", "▌", "●", "·"   # UI glyphs (box-draw
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
 PANE_MIN = 42                  # ...but only when there's at least this much room for the pane
-LEAF_W = 24                    # pad the project leaf so group stats line up in a real column
 
 HELP_LINES = [
     ("H", "move"),
@@ -704,9 +703,37 @@ def selftest(chats, where):
         print(f"peek({chats[0]['short']}): {len(t)} turns, first =", (t[0] if t else "none"))
     print_static(chats[:6], grouped=True)
 
+def term_light():
+    """True/False from the terminal's OSC 11 background reply, None when it won't say."""
+    import select, termios, tty
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        return None
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        # a local terminal answers in a few ms; give up fast so a silent one costs
+        # nothing you'd notice. read byte-wise so typeahead after the reply stays unread
+        os.write(fd, b"\033]11;?\033\\")
+        buf = b""
+        end = time.time() + 0.15
+        while not buf.endswith((b"\033\\", b"\a")):
+            if not select.select([fd], [], [], max(0, end - time.time()))[0]: break
+            buf += os.read(fd, 1)
+    except (OSError, termios.error):
+        return None
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old); os.close(fd)
+    m = re.search(rb"rgb:([0-9a-f]+)/([0-9a-f]+)/([0-9a-f]+)", buf, re.I)
+    if not m: return None
+    r, g, b = (int(x, 16) * 255 // (16 ** len(x) - 1) for x in m.groups())
+    return r * 299 + g * 587 + b * 114 >= 128000
+
 def run_ui(loader, title, grouped):
     import curses, locale
     locale.setlocale(locale.LC_ALL, "")
+    light = term_light() if sys.stdin.isatty() and sys.stdout.isatty() else None
 
     def main(stdscr):
         curses.curs_set(0)
@@ -727,7 +754,17 @@ def run_ui(loader, title, grouped):
             DIM = pair(9, 245)
             # explicit fg AND bg, so the cursor row looks right whatever the theme
             SEL = pair(10, 231, 60) | curses.A_BOLD
+            band = None if light is None else 254 if light else 236
+            BANDT = pair(11, -1, band) if band else 0
+            BANDD = pair(12, 245, band) if band else 0
+            tint = None if light is None else 189 if light else 18
+            TINT = pair(13, -1, tint) if tint else 0
+            TINTOK = pair(14, 71, tint) | curses.A_BOLD if tint else 0
+            tray = None if light is None else 255 if light else 235
+            TRAYD = pair(15, 245, tray) if tray else 0
+            TRAYOK = pair(16, 71, tray) | curses.A_BOLD if tray else 0
         else:
+            band = tray = None
             OK = pair(5, curses.COLOR_GREEN) | curses.A_BOLD
             YEL = pair(6, curses.COLOR_YELLOW)
             DANGER = pair(7, curses.COLOR_RED) | curses.A_BOLD
@@ -910,24 +947,31 @@ def run_ui(loader, title, grouped):
             f = flt.lower()
             vis = ordered if not flt else [c for c in ordered
                                            if f in c["label"].lower() or f in c["uuid"] or f in c["proj"].lower()]
-            all_vis = vis                                # keeps hidden chats, so . can find the nearest one
+            all_vis = vis                                # keeps hidden chats: a project can be all-hidden, . needs the nearest
             if not show_kept: vis = [c for c in vis if not c["kept"]]
 
             items = []                                   # gap + header + chat rows
             if grouped:
                 stat, cwds = {}, {}
-                for c in vis:
+                for c in all_vis:
                     s = stat.setdefault(c["proj"], [0, 0]); s[0] += 1; s[1] += c["size"]
                     if c.get("cwd"): cwds.setdefault(c["proj"], c["cwd"])
+                hidden = Counter(c["proj"] for c in all_vis if c["kept"])
                 last = None
-                for c in vis:
+                for c in all_vis:
                     if c["proj"] != last:
                         if last is not None: items.append(("gap",))   # blank line between sections
                         last = c["proj"]
-                        items.append(("hdr", c["proj"], stat[c["proj"]], cwds.get(c["proj"])))
-                    if c["proj"] not in folded: items.append(("chat", c))
+                        items.append(("hdr", c["proj"], stat.get(c["proj"], (0, 0)), cwds.get(c["proj"])))
+                        if c["proj"] in folded: continue
+                        grp = [x for x in vis if x["proj"] == last]
+                        gone = [x for x in grp if x["kept"]]
+                        items += [("chat", x) for x in grp if not x["kept"]]
+                        if gone: items += [("label", "hidden")] + [("chat", x) for x in gone]
             else:
-                items = [("chat", c) for c in vis]
+                items = [("chat", c) for c in vis if not c["kept"]]
+                gone = [c for c in vis if c["kept"]]
+                if gone: items += [("label", "hidden")] + [("chat", c) for c in gone]
 
             if focus:
                 at = [i for i, it in enumerate(items) if it[0] == "chat" and it[1]["uuid"] == focus]
@@ -971,18 +1015,38 @@ def run_ui(loader, title, grouped):
 
             def draw_hdr(y, it, sel=False):
                 shut = it[1] in folded
-                leaf, parent = split_path(it[3] if len(it) > 3 else None,
-                                          projlabel(it[1], PROJ_MAX))
-                leaf = fit(leaf, LEAF_W)
+                leaf, _ = split_path(it[3] if len(it) > 3 else None,
+                                     projlabel(it[1], PROJ_MAX))
                 info = f"{plural(it[2][0])} · {human(it[2][1])}"
-                if sel:                                  # cursor is parked on a folded group
-                    add(y, 0, f" ▸ {leaf.ljust(LEAF_W)}  {info}".ljust(cw), SEL)
+                if sel and not band:                     # cursor is parked on a folded group
+                    add(y, 0, f" ▸ {leaf}  {info}".ljust(cw), SEL)
                     return
                 add(y, 1, "▸" if shut else BAR, ACC | curses.A_BOLD)
-                add(y, 3, leaf.ljust(LEAF_W), curses.A_BOLD)
-                x = 3 + LEAF_W + 2
-                add(y, x, info.ljust(17), DIM)           # padded so stats form a column
-                if parent: add(y, x + 18, fit(parent, max(0, cw - x - 19)), DIM)
+                if band:
+                    bt, bd = (TINT, TINT) if sel else (BANDT, BANDD)
+                    add(y, 2, " " * (cw - 2), bt)
+                    add(y, 3, leaf, bt | curses.A_BOLD)
+                    if shut:
+                        add(y, 3 + len(leaf) + 2, info, bd)
+                        return
+                    n = hidden.get(it[1], 0)
+                    sz = human(it[2][1])
+                    tail = f" · {sz}" if n else sz
+                    add(y, cw - len(tail) - 1, tail, bd)
+                    if n: add(y, cw - len(tail) - len(f"{n} hidden") - 1, f"{n} hidden", bt)
+                    return
+                add(y, 3, leaf, curses.A_BOLD)
+                if shut:
+                    add(y, 3 + len(leaf) + 2, info, DIM)
+                    return
+                sz = human(it[2][1])
+                n = hidden.get(it[1], 0)
+                tail = f" · {sz}" if n else sz
+                txt = f"{n} hidden{tail}" if n else sz
+                add(y, cw - len(tail), tail, DIM)
+                if n: add(y, cw - len(txt), f"{n} hidden", 0)
+                rule = cw - len(txt) - 2 - (3 + len(leaf) + 2)
+                if rule > 0: add(y, 3 + len(leaf) + 2, RULE * rule, DIM)
 
             def draw_detail(it):
                 pw = w - px - 1
@@ -1041,6 +1105,11 @@ def run_ui(loader, title, grouped):
                     continue
                 if it[0] == "hdr":
                     draw_hdr(y, it, sel=(idx == cur)); continue
+                if it[0] == "label":
+                    lx = 3 if grouped else 1
+                    tx = lx + 14                             # title column, after mark + rel + size
+                    add(y, lx, (RULE * (tx - lx - 1) + f" {it[1]} ").ljust(cw - lx, RULE), DIM)
+                    continue
                 c = it[1]
                 on = c["uuid"] in picked
                 mark = PICK_ON if on else PICK_OFF
@@ -1050,18 +1119,32 @@ def run_ui(loader, title, grouped):
                 if c["live"]: tail_bits.append("● live")
                 if c["kept"]: tail_bits.append("kept")
                 tail = ("  " + "  ".join(tail_bits)) if tail_bits else ""
+                if idx == cur and band:
+                    x = 1 + len(ind)
+                    add(y, x, " " * (cw - x), TINT)
+                    add(y, x, mark, TINTOK if on else TINT); x += 1
+                    seg = f" {c['rel']:>3} {human(c['size']):>6}  "
+                    add(y, x, seg, TINT); x += len(seg)
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(tail))))
+                    add(y, x, lbl, TINT | curses.A_BOLD)
+                    add(y, x + len(lbl), tail, TINT)
+                    continue
                 if idx == cur:
                     pre = f" {ind}{mark} {c['rel']:>3} {human(c['size']):>6}  "
                     lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - len(pre) - len(tail))))
                     add(y, 0, (pre + lbl + tail).ljust(cw), SEL)
                     continue
+                ok, dim = OK, DIM
                 add(y, 0, " " + ind); x = 1 + len(ind)
-                add(y, x, mark, OK if on else DIM); x += 1
+                if tray and c["kept"]:
+                    add(y, x, " " * (cw - x), TRAYD)
+                    ok, dim = TRAYOK, TRAYD
+                add(y, x, mark, ok if on else dim); x += 1
                 seg = f" {c['rel']:>3} "
-                add(y, x, seg, DIM); x += len(seg)
+                add(y, x, seg, dim); x += len(seg)
                 sz = f"{human(c['size']):>6}"
-                add(y, x, sz, DIM); x += len(sz) + 2
-                tattr = DIM if c["kept"] else (curses.A_BOLD if c["live"] else 0)
+                add(y, x, sz, dim); x += len(sz) + 2
+                tattr = dim if c["kept"] else (curses.A_BOLD if c["live"] else 0)
                 lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x - len(tail))))
                 p = lbl.lower().find(f) if flt else -1
                 if p >= 0:                               # underline the filter match
@@ -1072,7 +1155,7 @@ def run_ui(loader, title, grouped):
                     add(y, x, lbl, tattr)
                 x += len(lbl)
                 for bit in tail_bits:
-                    add(y, x, "  " + bit, OK if bit == "● live" else DIM); x += len(bit) + 2
+                    add(y, x, "  " + bit, ok if bit == "● live" else dim); x += len(bit) + 2
             if pane:                                     # divider (doubles as scroll track) + detail
                 for j in range(body): add(2 + j, cw + 1, "│", DIM)
                 if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
@@ -1113,6 +1196,11 @@ def run_ui(loader, title, grouped):
                 continue
 
             pos = ci.index(cur) if cur in ci else 0
+            if ch == 27:                                 # a late terminal reply starts with ESC too
+                stdscr.nodelay(True); tail = stdscr.getch()
+                while tail != -1 and stdscr.getch() != -1: pass
+                stdscr.nodelay(False)
+                if tail != -1: continue
             if ch in (ord("q"), 27): break
             elif ch == ord("?"): do_help()
             elif ci and ch in (curses.KEY_DOWN, ord("j")): cur = ci[min(pos + 1, len(ci) - 1)]
