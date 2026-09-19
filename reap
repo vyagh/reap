@@ -31,7 +31,8 @@ Picker keys (press ? inside for this list):
   space pick (skips live)   a toggle select-all   c clear
   p peek (read-only preview)   d / enter delete (to trash, asks to confirm)
   u undo last delete   t trash browser (restore / purge)
-  s sort recency<->size   / filter (title/uuid/workspace/agent)   ? keys   q quit
+  s sort recency<->size   tab/shift-tab switch agent   P pin the tab reap opens on
+  / filter (title/uuid/workspace)   ? keys   q quit
 """
 import fcntl, json, os, re, subprocess, sys, glob, time, shutil, textwrap
 from collections import Counter
@@ -43,6 +44,7 @@ PROJ = os.path.join(HOME, ".claude", "projects")
 TRASH = os.path.join(HOME, ".claude", ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+AGENTS = ("claude", "codex")    # tab order: the order adapters are registered in, above
 STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 SKIP_PREFIXES = ("<", "#", "This session is being continued")   # Codex boilerplate first turns
@@ -50,6 +52,7 @@ NO_CODEX_CLI = False    # set from argv in main(): fall back to moving the file 
 RULE, BAR = "─", "▌"                        # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
+TAB_TIP = "P opens reap here every time"
 PANE_MIN = 42                  # ...but only when there's at least this much room for the pane
 
 HELP_LINES = [
@@ -73,7 +76,10 @@ HELP_LINES = [
     ("", "  s              sort: recency ↔ size"),
     ("", "  .              show / hide again hidden chats"),
     ("", "  ●              running    ◉ picked"),
-    ("", "  /              filter title · uuid · workspace · agent"),
+    ("", "  tab            next agent tab"),
+    ("", "  shift-tab      previous agent tab"),
+    ("", "  P              make this tab the one reap opens on (again: undo) · shown as *"),
+    ("", "  /              filter title · uuid · workspace"),
     ("", "  q              quit"),
     ("", ""),
     ("D", "delete moves the chat to a trash, recoverable for 7 days. hide only hides it."),
@@ -133,7 +139,9 @@ def load_state():
     o = read_json(STATE_PATH)
     if not isinstance(o, dict): return {"keep": {}}
     keep = o.get("keep")
-    return {"keep": keep if isinstance(keep, dict) else {}}
+    st = {"keep": keep if isinstance(keep, dict) else {}}
+    if isinstance(o.get("pin"), str): st["pin"] = o["pin"]
+    return st
 
 def id_on_disk(cid):
     """A keep entry is only worth remembering while the chat, or its trash entry,
@@ -146,10 +154,10 @@ def id_on_disk(cid):
     return False
 
 def write_state(state):
-    """Prune + write atomically. Only called for a keep/trash action or `rm --apply`,
-    never on a read-only run."""
-    state = {"keep": dict(state.get("keep", {}))}
-    state["keep"] = {k: v for k, v in state["keep"].items() if id_on_disk(k)}
+    """Prune + write atomically. Only called for a keep/trash action or
+    `rm --apply`, never on a read-only run."""
+    keep = {k: v for k, v in state.get("keep", {}).items() if id_on_disk(k)}
+    state = {"keep": keep, **({"pin": state["pin"]} if "pin" in state else {})}
     os.makedirs(STATE_DIR, exist_ok=True)
     tmp = STATE_PATH + f".tmp{os.getpid()}"
     with open(tmp, "w") as fh: json.dump(state, fh)
@@ -385,6 +393,11 @@ def codex_lock_live(cid):
     finally:
         os.close(fd)
     return live
+
+def installed(agent):
+    dirs = {"claude": [PROJ],
+            "codex": [os.path.join(CODEX_HOME, "sessions"), os.path.join(CODEX_HOME, "archived_sessions")]}
+    return any(os.path.isdir(d) for d in dirs[agent])
 
 def load_codex(keep, subagents=False):
     """Codex chats across every project: hidden subagent/guardian_review runs unless
@@ -756,16 +769,17 @@ def run_ui(loader, title, grouped):
             DIM = pair(9, 245)
             # explicit fg AND bg, so the cursor row looks right whatever the theme
             SEL = pair(10, 231, 60) | curses.A_BOLD
+            tab_attr = (pair(11, 231, 67) or curses.A_REVERSE) | curses.A_BOLD
             band = None if light is None else 254 if light else 236
-            BANDT = pair(11, -1, band) if band else 0
-            BANDD = pair(12, 245, band) if band else 0
+            BANDT = pair(12, -1, band) if band else 0
+            BANDD = pair(13, 245, band) if band else 0
             tint = None if light is None else 189 if light else 18
-            TINT = pair(13, -1, tint) if tint else 0
-            TINTLIVE = pair(14, 71, tint) if tint else 0
+            TINT = pair(14, -1, tint) if tint else 0
+            TINTLIVE = pair(15, 71, tint) if tint else 0
             TINTACC = pair(18, 67, tint) | curses.A_BOLD if tint else 0
             tray = None if light is None else 255 if light else 235
-            TRAYD = pair(15, 245, tray) if tray else 0
-            TRAYLIVE = pair(16, 71, tray) if tray else 0
+            TRAYD = pair(16, 245, tray) if tray else 0
+            TRAYLIVE = pair(17, 71, tray) if tray else 0
             TRAYACC = pair(19, 67, tray) | curses.A_BOLD if tray else 0
         else:
             band = tray = None
@@ -776,6 +790,7 @@ def run_ui(loader, title, grouped):
             ACC = pair(8, curses.COLOR_CYAN)
             DIM = curses.A_DIM
             SEL = curses.A_REVERSE | curses.A_BOLD
+            tab_attr = pair(11, curses.COLOR_BLACK, curses.COLOR_CYAN) or curses.A_REVERSE
         WARN = YEL | curses.A_BOLD
 
         keep_map = load_state()["keep"]                  # uuid -> epoch kept, refreshed on reload
@@ -788,13 +803,28 @@ def run_ui(loader, title, grouped):
         tn, tb = trash_stat()                            # cached; refreshed only on change
         folded = set()                                   # collapsed project groups
         focus = None                                     # uuid the cursor should land on after a view change
+        tip = False                                      # show the pin tip until the next key that isn't a tab switch
         pcache = {}                                       # uuid -> preview turns (lazy, cached)
 
+        def tab_list(chats):
+            """Installed agents (data dir present, even at 0 chats), in registration
+            order, preceded by 'all' once there's more than one. A single-agent machine gets
+            no tabs at all."""
+            agent_counts = Counter(c.get("src", "claude") for c in chats)
+            tabs = [a for a in AGENTS if installed(a) or agent_counts.get(a)]
+            return (["all"] + tabs) if len(tabs) > 1 else tabs, agent_counts
+
+        tabs, agent_counts = tab_list(chats)
+        pinned = load_state().get("pin")
+        tab = (pinned if pinned in tabs else "all") if len(tabs) > 1 else None
+
         def reload():                                    # after any trash-mutating action
-            nonlocal chats, by, tn, tb, keep_map
+            nonlocal chats, by, tn, tb, keep_map, tabs, agent_counts, tab
             keep_map = load_state()["keep"]
             chats = loader(); by = {c["uuid"]: c for c in chats}
             tn, tb = trash_stat()
+            tabs, agent_counts = tab_list(chats)
+            if tab not in tabs: tab = "all" if len(tabs) > 1 else None
 
         def add(y, x, s, attr=0):
             h, w = stdscr.getmaxyx()
@@ -956,11 +986,11 @@ def run_ui(loader, title, grouped):
         while True:
             stdscr.erase()
             h, w = stdscr.getmaxyx()
-            ordered = order(chats, sort_mode, grouped)
+            tab_chats = chats if tab in (None, "all") else [c for c in chats if c.get("src", "claude") == tab]
+            ordered = order(tab_chats, sort_mode, grouped)
             f = flt.lower()
             vis = ordered if not flt else [c for c in ordered
-                                           if f in c["label"].lower() or f in c["uuid"] or f in c["proj"].lower()
-                                           or f == c.get("src", "claude")]
+                                           if f in c["label"].lower() or f in c["uuid"] or f in c["proj"].lower()]
             all_vis = vis                                # keeps hidden chats: a project can be all-hidden, . needs the nearest
             if not show_kept: vis = [c for c in vis if not c["kept"]]
 
@@ -1003,24 +1033,26 @@ def run_ui(loader, title, grouped):
 
             top, pin, body = plan_view(items, cur, top, max(1, h - 4), grouped)
 
-            total = sum(c["size"] for c in chats)
+            total = sum(c["size"] for c in tab_chats)
             psz = sum(by[u]["size"] for u in picked if u in by)
             # split the terminal: a readable list on the left, a detail pane on the right when wide
             pane = w >= LIST_W + PANE_MIN
             cw = LIST_W if pane else w - 1               # list content width
             px = cw + 3                                  # detail-pane left column
             rw = w - 1                                   # rules span the whole frame
-            add(0, 1, " reap ", SEL)
-            kept_count = sum(1 for c in chats if c["kept"])
+            all_tabs = grouped and len(tabs) > 1         # the tab bar takes the badge's place
+            if not all_tabs: add(0, 1, " reap ", SEL)
+            kept_count = sum(1 for c in tab_chats if c["kept"])
             filtered = flt and not filtering
             right = []
             if picked: right.append((f"{len(picked)} picked · {human(psz)}", ACC))
             if filtered:
-                shown_n = sum(1 for c in chats if show_kept or not c["kept"])
+                shown_n = sum(1 for c in tab_chats if show_kept or not c["kept"])
                 right.append((f"{len(vis)} of {plural(shown_n)}", DIM))
             else:
                 if kept_count: right.append((f"{kept_count} hidden", DIM))
                 if tn: right.append((f"trash {human(tb)}", YEL))
+            if len(tabs) > 1: right.append((title if not grouped else human(total), DIM))
             rtxt = "   ".join(t for t, _ in right)
             x_right = max(8, cw - len(rtxt))
             x = x_right
@@ -1029,14 +1061,26 @@ def run_ui(loader, title, grouped):
                 add(0, x, t, attr); x += len(t)
 
             badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
-            avail = max(0, x_right - 3 - 8)
-            total_txt = f" · {human(total)}"
-            scope = projlabel(title, max(8, avail - len(total_txt) - len(badge)))
-            left = scope + total_txt
-            if len(left) + len(badge) > avail:
-                left = projlabel(title, max(8, avail - len(badge)))
-            add(0, 8, left, DIM)
-            if badge: add(0, 8 + len(left), badge, ACC | curses.A_BOLD)
+            if len(tabs) > 1:
+                x = 1 if all_tabs else 8
+                for a in tabs:
+                    n = len(chats) if a == "all" else agent_counts.get(a, 0)
+                    ttxt = f" {'*' if a == pinned else ''}{a} {n} "
+                    add(0, x, ttxt, tab_attr if a == tab else DIM)
+                    if a == pinned: add(0, x + 1, "*", (tab_attr | curses.A_BOLD) if a == tab else ACC)
+                    x += len(ttxt) + 1
+                if badge: add(0, x, badge, ACC | curses.A_BOLD); x += len(badge)
+                if tip and not pinned and x + 2 + len(TAB_TIP) < x_right:
+                    add(0, x + 2, TAB_TIP, DIM)
+            else:
+                avail = max(0, x_right - 3 - 8)
+                total_txt = f" · {human(total)}"
+                scope = projlabel(title, max(8, avail - len(total_txt) - len(badge)))
+                left = scope + total_txt
+                if len(left) + len(badge) > avail:
+                    left = projlabel(title, max(8, avail - len(badge)))
+                add(0, 8, left, DIM)
+                if badge: add(0, 8 + len(left), badge, ACC | curses.A_BOLD)
             add(1, 0, RULE * rw, DIM)
 
             def draw_hdr(y, it, sel=False):
@@ -1200,7 +1244,9 @@ def run_ui(loader, title, grouped):
                 add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
             else:
                 x = 1
-                hints = [("?", "keys"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
+                hints = [("?", "keys")]
+                if len(tabs) > 1: hints += [("tab", "agents")]
+                hints += [("s", "sort"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
                 if undo: hints.append(("u", "undo"))
                 hints += [("h", "hide"), (".", "hide again" if show_kept else "show hidden"),
                           ("t", "trash"), ("/", "filter"), ("q", "quit")]
@@ -1211,6 +1257,7 @@ def run_ui(loader, title, grouped):
 
             ch = stdscr.getch()
             msg = None
+            tip = False
             if filtering:
                 if ch in (10, 13): filtering = False
                 elif ch == 27: filtering = False; flt = ""
@@ -1236,6 +1283,18 @@ def run_ui(loader, title, grouped):
             elif ch == ord("s"):
                 sort_mode = "size" if sort_mode == "recency" else "recency"
                 cur = top = 0
+            elif len(tabs) > 1 and ch in (9, curses.KEY_BTAB):   # tab / shift-tab: cycle
+                tab = tabs[(tabs.index(tab) + (1 if ch == 9 else -1)) % len(tabs)]
+                cur = top = 0; tip = True
+            elif len(tabs) > 1 and ch == ord("P"):
+                st = load_state()
+                if tab == "all" or tab == pinned:
+                    st.pop("pin", None); pinned = None
+                    msg = ("ok", "reap opens on the all tab again")
+                else:
+                    st["pin"] = pinned = tab
+                    msg = ("ok", f"reap opens on the {tab} tab from now on")
+                write_state(st)
             elif grouped and ch == ord("]"):
                 hd = [i for i, it in enumerate(items) if it[0] == "hdr"]
                 gh = max([i for i in hd if i <= cur], default=-1)
@@ -1403,7 +1462,7 @@ def print_help():
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
                       ("select", "space pick   a toggle select-all   c clear   h hide"),
                       ("act", "p peek   d/enter delete (to trash)   u undo   t trash browser"),
-                      ("view", "s sort   . hidden   / filter   q quit")]:
+                      ("view", "s sort   tab/shift-tab agent   P pin tab   . hidden   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
     print(D("  ● running  ◉ picked"))
