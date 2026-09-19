@@ -33,6 +33,7 @@ Picker keys (press ? inside for this list):
   u undo last delete   t trash browser (restore / purge)
   s sort recency<->size   tab/shift-tab switch agent   P pin the tab reap opens on
   / filter (title/uuid/workspace)   ? keys   q quit
+  mouse: click a tab, chat row or group line (folds it), wheel scrolls
 """
 import fcntl, json, os, re, subprocess, sys, glob, time, shutil, textwrap
 from collections import Counter
@@ -60,6 +61,7 @@ HELP_LINES = [
     ("", "  ↑/↓  j/k       line            PgUp/PgDn   page"),
     ("", "  g / G          top / bottom    [ / ]       prev / next workspace"),
     ("", "  z / Z          fold this group / fold all"),
+    ("", "  mouse          click a tab, row or group line (folds); wheel scrolls"),
     ("", ""),
     ("H", "select & act"),
     ("", "  space          toggle pick (skips live sessions)"),
@@ -752,6 +754,12 @@ def run_ui(loader, title, grouped):
     def main(stdscr):
         curses.curs_set(0)
         curses.use_default_colors()
+        try:                                             # no mouse support is not an error
+            curses.mousemask(curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED
+                             | curses.BUTTON4_PRESSED | getattr(curses, "BUTTON5_PRESSED", 0))
+            curses.mouseinterval(0)                      # report the press itself, not a click
+        except curses.error:
+            pass
 
         def pair(i, fg, bg=-1):
             try:
@@ -817,6 +825,11 @@ def run_ui(loader, title, grouped):
         tabs, agent_counts = tab_list(chats)
         pinned = load_state().get("pin")
         tab = (pinned if pinned in tabs else "all") if len(tabs) > 1 else None
+
+        def switch_tab(t):
+            nonlocal tab, cur, top, tip
+            tab = t
+            cur = top = 0; tip = True
 
         def reload():                                    # after any trash-mutating action
             nonlocal chats, by, tn, tb, keep_map, tabs, agent_counts, tab
@@ -1061,6 +1074,7 @@ def run_ui(loader, title, grouped):
                 add(0, x, t, attr); x += len(t)
 
             badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
+            tab_spans = []                               # (x0, x1, tab) per drawn tab, for clicks
             if len(tabs) > 1:
                 x = 1 if all_tabs else 8
                 for a in tabs:
@@ -1068,7 +1082,7 @@ def run_ui(loader, title, grouped):
                     ttxt = f" {'*' if a == pinned else ''}{a} {n} "
                     add(0, x, ttxt, tab_attr if a == tab else DIM)
                     if a == pinned: add(0, x + 1, "*", (tab_attr | curses.A_BOLD) if a == tab else ACC)
-                    x += len(ttxt) + 1
+                    tab_spans.append((x, x + len(ttxt), a)); x += len(ttxt) + 1
                 if badge: add(0, x, badge, ACC | curses.A_BOLD); x += len(badge)
                 if tip and not pinned and x + 2 + len(TAB_TIP) < x_right:
                     add(0, x + 2, TAB_TIP, DIM)
@@ -1172,12 +1186,14 @@ def run_ui(loader, title, grouped):
             if not vis:
                 add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
             base = 2
+            row_at = {}                                  # screen row -> item index, for clicks
             if pin is not None:
-                draw_hdr(base, items[pin]); base += 1
+                draw_hdr(base, items[pin]); row_at[base] = pin; base += 1
             for k in range(body):
                 idx = top + k
                 if idx >= len(items): break
                 it = items[idx]; y = base + k
+                row_at[y] = idx
                 if it[0] == "gap":
                     continue
                 if it[0] == "hdr":
@@ -1284,8 +1300,7 @@ def run_ui(loader, title, grouped):
                 sort_mode = "size" if sort_mode == "recency" else "recency"
                 cur = top = 0
             elif len(tabs) > 1 and ch in (9, curses.KEY_BTAB):   # tab / shift-tab: cycle
-                tab = tabs[(tabs.index(tab) + (1 if ch == 9 else -1)) % len(tabs)]
-                cur = top = 0; tip = True
+                switch_tab(tabs[(tabs.index(tab) + (1 if ch == 9 else -1)) % len(tabs)])
             elif len(tabs) > 1 and ch == ord("P"):
                 st = load_state()
                 if tab == "all" or tab == pinned:
@@ -1295,6 +1310,19 @@ def run_ui(loader, title, grouped):
                     st["pin"] = pinned = tab
                     msg = ("ok", f"reap opens on the {tab} tab from now on")
                 write_state(st)
+            elif ch == curses.KEY_MOUSE:
+                try: _, mx, my, _, bstate = curses.getmouse()
+                except curses.error: continue
+                if bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED):
+                    hit = [t for x0, x1, t in tab_spans if x0 <= mx < x1]
+                    if my == 0 and hit: switch_tab(hit[0])
+                    elif my in row_at and mx < cw:
+                        it = items[row_at[my]]
+                        if it[0] == "chat": cur = row_at[my]
+                        elif it[0] == "hdr":
+                            folded.discard(it[1]) if it[1] in folded else folded.add(it[1])
+                elif ci and bstate & curses.BUTTON4_PRESSED: cur = ci[max(pos - 3, 0)]
+                elif ci and bstate & getattr(curses, "BUTTON5_PRESSED", 0): cur = ci[min(pos + 3, len(ci) - 1)]
             elif grouped and ch == ord("]"):
                 hd = [i for i, it in enumerate(items) if it[0] == "hdr"]
                 gh = max([i for i in hd if i <= cur], default=-1)
