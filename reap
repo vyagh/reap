@@ -837,7 +837,7 @@ def run_ui(loader, title, grouped):
             w0 = stdscr.getmaxyx()[1]
             for who, text in turns:
                 lines.append(("u" if who == "you" else "a", BAR + " " + who))
-                for ln in (textwrap.wrap(text, max(10, min(w0 - 6, 110))) or [""]):
+                for ln in (textwrap.wrap(text, max(10, w0 - 6)) or [""]):
                     lines.append(("", "   " + ln))
                 lines.append(("", ""))
             if not lines: lines = [("", "(no readable messages)")]
