@@ -47,7 +47,7 @@ STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 SKIP_PREFIXES = ("<", "#", "This session is being continued")   # Codex boilerplate first turns
 NO_CODEX_CLI = False    # set from argv in main(): fall back to moving the file ourselves
-RULE, BAR, PICK_ON = "─", "▌", "▸"          # UI glyphs (box-drawing over ASCII)
+RULE, BAR = "─", "▌"                        # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
 PANE_MIN = 42                  # ...but only when there's at least this much room for the pane
@@ -72,7 +72,7 @@ HELP_LINES = [
     ("H", "view"),
     ("", "  s              sort: recency ↔ size"),
     ("", "  .              show / hide again hidden chats"),
-    ("", "  ●              running, · otherwise"),
+    ("", "  ●              running    ◉ picked"),
     ("", "  /              filter title · uuid · workspace · agent"),
     ("", "  q              quit"),
     ("", ""),
@@ -762,11 +762,11 @@ def run_ui(loader, title, grouped):
             tint = None if light is None else 189 if light else 18
             TINT = pair(13, -1, tint) if tint else 0
             TINTLIVE = pair(14, 71, tint) if tint else 0
-            TINTOK = TINTLIVE | curses.A_BOLD
+            TINTACC = pair(18, 67, tint) | curses.A_BOLD if tint else 0
             tray = None if light is None else 255 if light else 235
             TRAYD = pair(15, 245, tray) if tray else 0
             TRAYLIVE = pair(16, 71, tray) if tray else 0
-            TRAYOK = TRAYLIVE | curses.A_BOLD
+            TRAYACC = pair(19, 67, tray) | curses.A_BOLD if tray else 0
         else:
             band = tray = None
             LIVE = pair(5, curses.COLOR_GREEN)
@@ -1013,11 +1013,12 @@ def run_ui(loader, title, grouped):
             add(0, 1, " reap ", SEL)
             kept_count = sum(1 for c in chats if c["kept"])
             filtered = flt and not filtering
+            right = []
+            if picked: right.append((f"{len(picked)} picked · {human(psz)}", ACC))
             if filtered:
                 shown_n = sum(1 for c in chats if show_kept or not c["kept"])
-                right = [(f"{len(vis)} of {plural(shown_n)}", DIM)]
+                right.append((f"{len(vis)} of {plural(shown_n)}", DIM))
             else:
-                right = []
                 if kept_count: right.append((f"{kept_count} hidden", DIM))
                 if tn: right.append((f"trash {human(tb)}", YEL))
             rtxt = "   ".join(t for t, _ in right)
@@ -1144,14 +1145,14 @@ def run_ui(loader, title, grouped):
                     continue
                 c = it[1]
                 on = c["uuid"] in picked
-                if on: mark, mattr = PICK_ON, OK          # picked: same mark whatever the state
-                elif c["live"]: mark, mattr = "●", LIVE
+                if c["live"]: mark, mattr = "●", LIVE
+                elif on: mark, mattr = "◉", ACC | curses.A_BOLD
                 else: mark, mattr = "·", DIM
                 ind = "  " if grouped else ""
                 if idx == cur and band:
                     x = 1 + len(ind)
                     add(y, x, " " * (cw - x), TINT)
-                    add(y, x, mark, TINTOK if on else TINTLIVE if c["live"] else TINT); x += 1
+                    add(y, x, mark, TINTLIVE if c["live"] else TINTACC if on else TINT); x += 1
                     seg = f" {c['rel']:>3} {human(c['size']):>6}  "
                     add(y, x, seg, TINT); x += len(seg)
                     lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x)))
@@ -1167,7 +1168,7 @@ def run_ui(loader, title, grouped):
                 if tray and c["kept"]:
                     add(y, x, " " * (cw - x), TRAYD)
                     dim = TRAYD
-                    mattr = TRAYOK if on else TRAYLIVE if c["live"] else TRAYD
+                    mattr = TRAYLIVE if c["live"] else TRAYACC if on else TRAYD
                 add(y, x, mark, mattr); x += 1
                 seg = f" {c['rel']:>3} "
                 add(y, x, seg, dim); x += len(seg)
@@ -1206,9 +1207,6 @@ def run_ui(loader, title, grouped):
                 for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
                     add(h - 1, x, act, DIM); x += len(act) + 3
-                if picked:
-                    ptxt = f"{PICK_ON} {len(picked)} picked · {human(psz)}"
-                    add(h - 1, max(x + 1, cw - len(ptxt)), ptxt, OK)
             stdscr.refresh()
 
             ch = stdscr.getch()
@@ -1408,7 +1406,7 @@ def print_help():
                       ("view", "s sort   . hidden   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
-    print(D("  ● running, · otherwise"))
+    print(D("  ● running  ◉ picked"))
     print()
     print(D(f"the picker confirms before deleting. deletes go to a trash for {TRASH_DAYS} days unless you pass --hard. live sessions are refused."))
 
