@@ -99,9 +99,23 @@ def dirname_for(path):
     (not just '/': a dot or underscore in the path needs this too, e.g. 'my.app')."""
     return re.sub(r"[^a-zA-Z0-9]", "-", path)
 
+def dir_by_cwd(cwd):
+    """Claude Code caps a long dir name and appends a hash we can't reproduce, so
+    find the project whose transcripts recorded this cwd in their header."""
+    for d in sorted(glob.glob(os.path.join(PROJ, "*"))):
+        if not under_proj(d): continue
+        for p in glob.glob(os.path.join(d, "*.jsonl")):
+            c = meta(p)[2]
+            if c is not None:
+                if c == cwd: return d
+                break
+    return None
+
 def resolve_dir(arg):
     if not arg:
-        return os.path.join(PROJ, dirname_for(os.path.abspath(os.getcwd())))
+        cwd = os.path.abspath(os.getcwd())
+        d = os.path.join(PROJ, dirname_for(cwd))
+        return d if os.path.isdir(d) else dir_by_cwd(cwd) or d
     if os.path.isdir(arg):
         ap = os.path.abspath(arg)
         return ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, dirname_for(ap))
