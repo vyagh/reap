@@ -41,8 +41,9 @@ from collections import Counter
 __version__ = "0.4.0"
 
 HOME = os.path.expanduser("~")
-PROJ = os.path.join(HOME, ".claude", "projects")
-TRASH = os.path.join(HOME, ".claude", ".reap-trash")
+CLAUDE_HOME = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+PROJ = os.path.join(CLAUDE_HOME, "projects")
+TRASH = os.path.join(CLAUDE_HOME, ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 AGENTS = ("claude", "codex")    # tab order: the order adapters are registered in, above
@@ -195,10 +196,10 @@ def proc_dead(pid, domain=None):
 def live_session_ids():
     # A session/worker whose pid is dead is a stale file, not a live session. Don't protect it.
     ids = set()
-    for p in glob.glob(os.path.join(HOME, ".claude", "sessions", "*.json")):
+    for p in glob.glob(os.path.join(CLAUDE_HOME, "sessions", "*.json")):
         o = read_json(p)
         if isinstance(o, dict) and not proc_dead(o.get("pid"), o.get("pidDomain")): ids.add(o.get("sessionId"))
-    r = read_json(os.path.join(HOME, ".claude", "daemon", "roster.json"))
+    r = read_json(os.path.join(CLAUDE_HOME, "daemon", "roster.json"))
     if isinstance(r, dict):
         for w in r.get("workers", {}).values():
             if isinstance(w, dict) and not proc_dead(w.get("pid"), w.get("pidDomain")): ids.add(w.get("sessionId"))
@@ -434,7 +435,7 @@ def load_claude_chats(DIR, keep):
     for jp in glob.glob(os.path.join(DIR, "*.jsonl")):
         uuid = os.path.basename(jp)[:-6]
         sd = os.path.join(DIR, uuid)
-        fh = os.path.join(HOME, ".claude", "file-history", uuid)   # edit snapshots, the big leftover
+        fh = os.path.join(CLAUDE_HOME, "file-history", uuid)   # edit snapshots, the big leftover
         title, prompt, cwd, n = meta(jp)
         mt = os.path.getmtime(jp)
         size = os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0)
@@ -476,7 +477,7 @@ def load_all(tmp=False, subagents=False):
 def resumer_job_dirs(uuid):
     """Job dirs whose resumeSessionId is this chat: they'd dangle after delete."""
     out = []
-    for d in glob.glob(os.path.join(HOME, ".claude", "jobs", "*")):
+    for d in glob.glob(os.path.join(CLAUDE_HOME, "jobs", "*")):
         try:
             with open(os.path.join(d, "state.json")) as fh: txt = fh.read()
         except OSError: continue
@@ -489,9 +490,9 @@ def resumer_job_dirs(uuid):
 def chat_artifacts(DIR, uuid):
     arts = [os.path.join(DIR, uuid + ".jsonl"), os.path.join(DIR, uuid)]
     for sub in ("file-history", "session-env", "tasks"):   # per-session state keyed by uuid
-        arts.append(os.path.join(HOME, ".claude", sub, uuid))
+        arts.append(os.path.join(CLAUDE_HOME, sub, uuid))
     short = uuid.split("-")[0]                            # empty short would collapse to the whole
-    if short: arts.append(os.path.join(HOME, ".claude", "jobs", short))   # jobs/ dir, guard it
+    if short: arts.append(os.path.join(CLAUDE_HOME, "jobs", short))   # jobs/ dir, guard it
     return arts + resumer_job_dirs(uuid)
 
 def artifact_kinds(DIR, uuid):
@@ -596,7 +597,7 @@ def restore_entry(d):
     Validates the (possibly tampered) manifest: base must be a bare name inside the entry,
     and src must land back under a directory reap owns, never an arbitrary path."""
     roots = (os.path.realpath(PROJ),) + tuple(
-        os.path.realpath(os.path.join(HOME, ".claude", sub))
+        os.path.realpath(os.path.join(CLAUDE_HOME, sub))
         for sub in ("jobs", "file-history", "session-env", "tasks"))
     meta = read_json(os.path.join(d, "reap-meta.json"))
     if not isinstance(meta, dict): return None
