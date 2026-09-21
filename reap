@@ -476,13 +476,13 @@ def load_chats(DIR, subagents=False):
     return chats
 
 def load_all(tmp=False, subagents=False):
-    """Ephemeral /tmp scratchpad sessions are hidden by default: nothing you'd
-    want to keep lives there, and their uuid-laden paths swamp the group headers."""
+    """Ephemeral /tmp scratchpad sessions (macOS: /private/tmp) are hidden by default:
+    nothing you'd want to keep lives there, and their uuid-laden paths swamp the group headers."""
     keep = load_state()["keep"]
     chats = []
     for d in sorted(glob.glob(os.path.join(PROJ, "*"))):
         if not under_proj(d): continue
-        if not tmp and os.path.basename(d).startswith("-tmp-"): continue
+        if not tmp and os.path.basename(d).startswith(("-tmp-", "-private-tmp-")): continue
         chats += load_claude_chats(d, keep)
     chats += load_codex(keep, subagents)
     recent = {}
