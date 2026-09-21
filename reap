@@ -130,7 +130,7 @@ def resolve_dir(arg):
 
 def pretty(DIR):
     name = os.path.basename(DIR)
-    prefix = "-" + HOME.strip("/").replace("/", "-")   # e.g. -home-alice
+    prefix = dirname_for(HOME)   # e.g. -home-alice
     if name.startswith(prefix): name = name[len(prefix):]
     return name.lstrip("-") or os.path.basename(DIR)
 
