@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/vyagh/reap/v0.4.0/reap -o ~/.local/
 chmod +x ~/.local/bin/reap
 ```
 
-One file of stdlib Python, so read it before you run it. Python 3.8 or newer. Linux and macOS, or WSL on Windows.
+One file of stdlib Python, so read it before you run it. Python 3.8 or newer. Linux and macOS, or WSL on Windows. WSL sees only WSL-side installs, so chats made by the Windows-side apps are not visible.
 
 ## Use
 
