@@ -30,7 +30,7 @@ Picker keys (press ? inside for this list):
   up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
   space pick (skips live)   a toggle select-all   c clear
   p peek (read-only preview)   d / enter delete (to trash, asks to confirm)
-  u undo last delete   t trash browser (restore / purge)
+  u undo last delete   t trash browser (pick, restore, purge, empty)
   s sort recency<->size   tab/shift-tab switch agent   P pin the tab reap opens on
   / filter (title/uuid/workspace)   ? keys   q quit
   mouse: click a tab, chat row or group line (folds it), wheel scrolls
@@ -987,7 +987,7 @@ def run_ui(loader, title, grouped):
             stdscr.refresh()
             return stdscr.getch() in (ord("y"), ord("Y"))
 
-        def confirm_delete(sel):
+        def confirm_delete(sel, purge=False):
             sel = sorted(sel, key=lambda c: -c["size"])
             freed = human(sum(c["size"] for c in sel))
             h, w = stdscr.getmaxyx()
@@ -997,7 +997,8 @@ def run_ui(loader, title, grouped):
             hh = shown + (1 if more else 0) + 5
             y0, x0 = max(0, (h - hh) // 2), max(0, (w - ww) // 2)
             n = len(sel)
-            box(y0, x0, hh, ww, f"delete {plural(n)} · {freed}", curses.A_BOLD)
+            box(y0, x0, hh, ww, f"{'purge' if purge else 'delete'} {plural(n)} · {freed}",
+                DANGER if purge else curses.A_BOLD)
             for j in range(shown):
                 c = sel[j]
                 src = c.get("src", "claude")
@@ -1006,9 +1007,11 @@ def run_ui(loader, title, grouped):
                 add(y0 + 2 + j, x0 + 11, fit(c["label"], ww - 14 - extra))
                 if extra: add(y0 + 2 + j, x0 + ww - 2 - len(src), src, DIM)
             if more: add(y0 + 2 + shown, x0 + 11, f"… and {more} more", DIM)
-            add(y0 + hh - 2, x0 + 3, "y", OK)
+            add(y0 + hh - 2, x0 + 3, "y", DANGER if purge else OK)
             other_src = sorted({c.get("src", "claude") for c in sel} - {"claude"})
-            if other_src:
+            if purge:
+                hint = "gone for good · " + ("codex chats via codex delete · " if other_src else "") + "other key cancels"
+            elif other_src:
                 hint = f"move to trash · {', '.join(other_src)} chats via codex archive · undo for {TRASH_DAYS}d"
             else:
                 hint = f"move to trash · undo for {TRASH_DAYS}d · other key cancels"
@@ -1293,8 +1296,8 @@ def run_ui(loader, title, grouped):
                 hints = [("?", "keys")]
                 if len(tabs) > 1: hints += [("tab", "agents")]
                 if trashing:
-                    if vis: hints += [("r", "restore"), ("x", "purge"), ("E", "empty")]
-                    hints.append(("q", "back"))
+                    if vis: hints += [("space", "pick"), ("r", "restore"), ("x", "purge"), ("E", "empty")]
+                    hints += [("/", "filter"), ("q", "back")]
                 else:
                     hints += [("s", "sort"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
                     if undo: hints.append(("u", "undo"))
@@ -1324,22 +1327,35 @@ def run_ui(loader, title, grouped):
                 if tail != -1: continue
             if ch in (ord("q"), 27) or (trashing and ch == ord("t")): break
             elif ch == ord("?"): do_help()
-            elif trashing and ch in (ord(" "), ord("a"), ord("c"), ord("p"), ord("d"), ord("u"), ord("h"),
-                                     ord("."), ord("s"), ord("/"), 10, 13): pass
+            elif trashing and ch in (ord("p"), ord("d"), ord("u"), ord("h"), ord("."), ord("s"),
+                                     10, 13): pass
             elif trashing and ch in (ord("r"), ord("x"), ord("E")):
-                c = items[cur][1] if ci and items[cur][0] == "chat" else None
-                if ch == ord("E") and tab_chats:
-                    freed = human(sum(e["size"] for e in tab_chats))
-                    if confirm_ask(f"empty trash: {plural(len(tab_chats))}, {freed}, forever?",
-                                   "frees the disk · gone for good · other cancels"):
-                        for e in tab_chats: purge_entry(e, NO_CODEX_CLI)
-                        changed = True; reload()
-                elif c and ch == ord("r"):
-                    restore_entry(c["_dir"]); changed = True; reload()
-                elif c and ch == ord("x"):
-                    if confirm_ask(f"purge 1 chat ({human(c['size'])}) permanently?",
-                                   "delete forever · other cancels"):
-                        purge_entry(c, NO_CODEX_CLI); changed = True; reload()
+                sel = [by[u] for u in picked if u in by]
+                if ch == ord("r"):
+                    sel = sel or ([items[cur][1]] if ci and items[cur][0] == "chat" else [])
+                    for e in sel: restore_entry(e["_dir"])
+                    if sel: msg = ("ok", f"restored {plural(len(sel))}")
+                elif ch == ord("x"):
+                    if not sel: msg = ("warn", "nothing selected")
+                    elif confirm_delete(sel, purge=True):
+                        for e in sel: purge_entry(e, NO_CODEX_CLI)
+                        msg = ("ok", f"purged {plural(len(sel))}")
+                    else: msg = ("warn", "cancelled"); sel = []
+                else:
+                    sel = []
+                    shown = vis if flt else tab_chats
+                    if shown:
+                        freed = human(sum(e["size"] for e in shown))
+                        scope = [] if tab in (None, "all") else [tab]
+                        head = [f"empty {len(shown)} shown"] if flt else ["empty trash"]
+                        tail = [freed] if flt else [plural(len(shown)), freed]
+                        if confirm_ask(" · ".join(head + scope + tail),
+                                       "frees the disk · gone for good · other cancels"):
+                            sel = shown
+                            for e in sel: purge_entry(e, NO_CODEX_CLI)
+                            msg = ("ok", f"emptied {plural(len(sel))} · {freed}")
+                        else: msg = ("warn", "cancelled")
+                if sel: changed = True; picked = set(); reload()
             elif ci and ch in (curses.KEY_DOWN, ord("j")): cur = ci[min(pos + 1, len(ci) - 1)]
             elif ci and ch in (curses.KEY_UP, ord("k")): cur = ci[max(pos - 1, 0)]
             elif ci and ch == curses.KEY_NPAGE: cur = ci[min(pos + body, len(ci) - 1)]
