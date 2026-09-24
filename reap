@@ -74,6 +74,7 @@ HELP_LINES = [
     ("H", "trash · undo"),
     ("", "  u              undo the last delete"),
     ("", "  t              trash browser: restore / purge"),
+    ("", "  space, r, x, E in the trash: pick, restore, purge, empty (only the filtered rows if a filter is on)"),
     ("", ""),
     ("H", "view"),
     ("", "  s              sort: recency ↔ size"),
@@ -896,6 +897,7 @@ def run_ui(loader, title, grouped):
         folded = set()                                   # collapsed project groups
         focus = None                                     # uuid the cursor should land on after a view change
         changed = False                                  # a trash pass altered the trash
+        restored = []                                    # trash chats put back, in order
         tip = False                                      # show the pin tip until the next key that isn't a tab switch
         pcache = {}                                       # uuid -> preview turns (lazy, cached)
 
@@ -1358,8 +1360,14 @@ def run_ui(loader, title, grouped):
                 sel = [by[u] for u in picked if u in by]
                 if ch == ord("r"):
                     sel = sel or ([items[cur][1]] if ci and items[cur][0] == "chat" else [])
-                    for e in sel: restore_entry(e["_dir"])
-                    if sel: msg = ("ok", f"restored {plural(len(sel))}")
+                    failed = []
+                    for e in sel:
+                        if restore_entry(e["_dir"]): restored.append(e)
+                        else: failed.append(e)
+                    if failed:
+                        msg = ("warn", "could not restore " + (fit(failed[0]["label"], 40) if len(failed) == 1
+                                                               else plural(len(failed))))
+                    elif sel: msg = ("ok", f"restored {plural(len(sel))}")
                 elif ch == ord("x"):
                     if not sel: msg = ("warn", "nothing selected")
                     elif confirm_delete(sel, purge=True):
@@ -1446,12 +1454,18 @@ def run_ui(loader, title, grouped):
             elif ch == ord("p"):
                 if ci and items[cur][0] == "chat": do_peek(items[cur][1])
             elif ch == ord("t"):
-                edited = main(stdscr, trash_chats, True, True)
+                edited, back = main(stdscr, trash_chats, True, True)
                 pinned = load_state().get("pin")
                 if edited:                               # trash changed -> refresh list + stat
                     reload()
                     undo = [g for g in ([d for d in g if os.path.isdir(d)] for g in undo) if g]
                     cur = top = 0
+                if back:
+                    ids = {b["uuid"] for b in back}
+                    focus = next((c["uuid"] for c in order(chats, sort_mode, grouped)
+                                  if c["uuid"] in ids and tab in (None, "all", c.get("src", "claude"))), None)
+                    if len(back) == 1: msg = ("ok", f"restored {fit(back[0]['label'], 40)}")
+                    else: msg = ("ok", f"restored {plural(len(back))}")
             elif ch == ord("u"):
                 if not undo:
                     msg = ("warn", "nothing to undo")
@@ -1537,7 +1551,7 @@ def run_ui(loader, title, grouped):
                     else: msg = ("warn", "nothing trashed")
                 else:
                     msg = ("warn", "cancelled")
-        return changed
+        return changed, restored
 
     curses.wrapper(main)
 
