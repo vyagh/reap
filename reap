@@ -529,6 +529,18 @@ def delete_chat(DIR, uuid):                              # hard, irreversible
         if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
         elif os.path.exists(p): os.remove(p)
 
+def drop_bare_proj(DIR):
+    """After a purge: remove a project dir holding nothing but an empty memory/ (Claude
+    recreates it). Any file anywhere inside keeps the dir."""
+    if not DIR or not under_proj(DIR): return
+    try:
+        names = os.listdir(DIR)
+        if names == ["memory"] and not os.path.islink(os.path.join(DIR, "memory")):
+            os.rmdir(os.path.join(DIR, "memory"))
+        elif names: return
+        os.rmdir(DIR)
+    except OSError: pass
+
 def trash_move(key, paths, label="", origin="", cwd=None):
     """Soft-delete: move paths into a trash entry with a restore manifest. Reversible."""
     dest = os.path.join(TRASH, f"{int(time.time() * 1000)}-{key}")
@@ -611,6 +623,7 @@ def purge_entry(m, no_cli):
     if m.get("src") == "codex" and not m.get("moved") and not no_cli:
         run_codex(["delete", m.get("uuid", ""), "--force"])
     shutil.rmtree(m["_dir"], ignore_errors=True)
+    if m.get("src") != "codex": drop_bare_proj(m.get("dir"))
 
 def restore_entry(d):
     """Move a trash entry's artifacts back to their original paths; drop the entry.
@@ -1677,7 +1690,7 @@ def cmd_rm(args):
         for uuid, path, label, cwd in plan:
             if path and hard: shutil.rmtree(path, ignore_errors=True)
             elif path: trash_move(os.path.basename(path), [path], label, os.path.dirname(path))
-            elif hard: delete_chat(DIR, uuid)
+            elif hard: delete_chat(DIR, uuid); drop_bare_proj(DIR)
             else: trash_chat(DIR, uuid, label, cwd)
             if uuid: st["keep"].pop(uuid, None)
         write_state(st)
