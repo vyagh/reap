@@ -35,7 +35,7 @@ Picker keys (press ? inside for this list):
   / filter (title/uuid/workspace)   ? keys   q quit
   mouse: click a tab, chat row or group line (folds it), wheel scrolls
 """
-import fcntl, json, os, re, subprocess, sys, glob, time, shutil, textwrap
+import fcntl, json, os, re, subprocess, sys, glob, time, shutil, textwrap, tempfile
 from collections import Counter
 
 __version__ = "0.4.0"
@@ -131,6 +131,7 @@ def resolve_dir(arg):
 def pretty(DIR):
     name = os.path.basename(DIR)
     prefix = dirname_for(HOME)   # e.g. -home-alice
+    if name == prefix: return "~"
     if name.startswith(prefix): name = name[len(prefix):]
     return name.lstrip("-") or os.path.basename(DIR)
 
@@ -527,7 +528,7 @@ def delete_chat(DIR, uuid):                              # hard, irreversible
         if os.path.isdir(p): shutil.rmtree(p, ignore_errors=True)
         elif os.path.exists(p): os.remove(p)
 
-def trash_move(key, paths, label="", origin=""):
+def trash_move(key, paths, label="", origin="", cwd=None):
     """Soft-delete: move paths into a trash entry with a restore manifest. Reversible."""
     dest = os.path.join(TRASH, f"{int(time.time() * 1000)}-{key}")
     os.makedirs(dest, exist_ok=True)
@@ -542,11 +543,12 @@ def trash_move(key, paths, label="", origin=""):
             moved.append([src, base])
         except (OSError, shutil.Error): pass
     with open(os.path.join(dest, "reap-meta.json"), "w") as fh:
-        json.dump({"uuid": key, "dir": origin, "label": label, "at": time.time(), "moved": moved}, fh)
+        json.dump({"uuid": key, "dir": origin, "label": label, "at": time.time(), "moved": moved,
+                   "proj": pretty(origin) if origin else "~", "cwd": cwd}, fh)
     return dest
 
-def trash_chat(DIR, uuid, label=""):
-    return trash_move(uuid, chat_artifacts(DIR, uuid), label, DIR)
+def trash_chat(DIR, uuid, label="", cwd=None):
+    return trash_move(uuid, chat_artifacts(DIR, uuid), label, DIR, cwd)
 
 def run_codex(args):
     """Every codex call: stdin from /dev/null, output captured, 30s timeout. A timeout
@@ -561,7 +563,7 @@ def run_codex(args):
     except subprocess.TimeoutExpired:
         return False, "timed out"
 
-def trash_codex(cid, label, no_cli):
+def trash_codex(cid, label, no_cli, proj, cwd):
     """reap never moves a Codex chat's own files: state_5.sqlite's threads.rollout_path
     would dangle. Shell to `codex archive`, whose own archived_sessions holds the file;
     the entry holds no files, just where to find it. --no-codex-cli falls back to
@@ -577,7 +579,7 @@ def trash_codex(cid, label, no_cli):
             except (OSError, shutil.Error): pass
         with open(os.path.join(dest, "reap-meta.json"), "w") as fh:
             json.dump({"uuid": cid, "dir": "", "label": label, "at": time.time(),
-                       "moved": moved, "src": "codex", "archived": None}, fh)
+                       "moved": moved, "src": "codex", "archived": None, "proj": proj, "cwd": cwd}, fh)
         return dest, None
     ok, err = run_codex(["archive", cid])
     if not ok: return None, f"codex archive failed: {err}"
@@ -585,7 +587,7 @@ def trash_codex(cid, label, no_cli):
     archived = next(iter(glob.glob(os.path.join(CODEX_HOME, "archived_sessions", f"*{cid}*.jsonl"))), None)
     with open(os.path.join(dest, "reap-meta.json"), "w") as fh:
         json.dump({"uuid": cid, "dir": "", "label": label, "at": time.time(),
-                   "moved": [], "src": "codex", "archived": archived}, fh)
+                   "moved": [], "src": "codex", "archived": archived, "proj": proj, "cwd": cwd}, fh)
     return dest, None
 
 def restore_codex(meta, d, no_cli):
@@ -632,15 +634,26 @@ def restore_entry(d):
     shutil.rmtree(d, ignore_errors=True)
     return meta
 
+def dir_cwd(d):
+    """The cwd a project dir's first readable transcript recorded, else None."""
+    for p in glob.glob(os.path.join(d, "*.jsonl")):
+        c = meta(p)[2]
+        if c is not None: return c
+    return None
+
 def trash_list():
-    """Trash entries newest-first, each meta annotated with _dir and _size. A Codex
-    entry with no moved files shows the archived file's size, read live."""
+    """Trash entries newest-first, each meta annotated with _dir, _size and _proj. A Codex
+    entry with no moved files shows the archived file's size, read live. Entries from
+    before the manifest carried a project get one from dir, else '~', and the cwd of
+    a transcript still in that dir, so the band reads like the list's."""
     out = []
     for d in glob.glob(os.path.join(TRASH, "*")):
         if not os.path.isdir(d): continue
         m = read_json(os.path.join(d, "reap-meta.json"))
         if not isinstance(m, dict): continue
         m["_dir"] = d
+        m["_proj"] = m.get("proj") or (pretty(m["dir"]) if m.get("dir") else "~")
+        if not m.get("cwd") and m.get("dir"): m["cwd"] = dir_cwd(m["dir"])
         if m.get("src") == "codex" and not m.get("moved"):
             arch = m.get("archived")
             m["_size"] = os.path.getsize(arch) if arch and os.path.exists(arch) else 0
@@ -727,6 +740,23 @@ def print_static(chats, grouped=False):
         print(f"  {c['rel']:>4} {human(c['size']):>6} {c['msgs']:>5}  {c['label'][:44]:44} {c['short']}{src}{live}")
     print(f"\n{len(chats)} chats - {human(sum(c['size'] for c in chats))} total")
 
+def selftest_trash():
+    """A trash entry written before the manifest carried proj and cwd still lists."""
+    global TRASH
+    old = {"uuid": "0a", "dir": os.path.join(PROJ, dirname_for(HOME + "/app")), "label": "old", "at": 1, "moved": []}
+    new = dict(old, uuid="0b", label="new", proj="app", cwd=HOME + "/app")
+    home = dict(old, uuid="0c", dir=os.path.join(PROJ, dirname_for(HOME)))
+    real, TRASH = TRASH, tempfile.mkdtemp()
+    try:
+        for m in (old, new, home):
+            os.makedirs(os.path.join(TRASH, m["uuid"]))
+            with open(os.path.join(TRASH, m["uuid"], "reap-meta.json"), "w") as fh: json.dump(m, fh)
+        got = {e["uuid"]: e["_proj"] for e in trash_list()}
+    finally:
+        shutil.rmtree(TRASH, ignore_errors=True); TRASH = real
+    assert got == {"0a": "app", "0b": "app", "0c": "~"}, got
+    print("trash   : old and new manifests list under", got["0a"], "and", got["0c"])
+
 def selftest(chats, where):
     print(f"loaded {len(chats)} chats from {where}")
     print("live    :", [c["short"] for c in chats if c["live"]] or "none")
@@ -736,6 +766,7 @@ def selftest(chats, where):
         t = peek_turns(chats[0]["path"], src=chats[0].get("src", "claude"))
         print(f"peek({chats[0]['short']}): {len(t)} turns, first =", (t[0] if t else "none"))
     print_static(chats[:6], grouped=True)
+    selftest_trash()
 
 def term_light():
     """True/False from the terminal's OSC 11 background reply, None when it won't say."""
@@ -1447,10 +1478,10 @@ def run_ui(loader, title, grouped):
                         if u not in by: continue
                         c = by[u]
                         if c.get("src") == "codex":
-                            dest, err = trash_codex(c["uuid"], c["label"], NO_CODEX_CLI)
+                            dest, err = trash_codex(c["uuid"], c["label"], NO_CODEX_CLI, c["proj"], c["cwd"])
                             if err: fail = err; continue
                         else:
-                            dest = trash_chat(c["dir"], u, c["label"])
+                            dest = trash_chat(c["dir"], u, c["label"], c["cwd"])
                         dests.append(dest); st["keep"].pop(u, None)
                     if dests: write_state(st)
                     undo.append(dests)
@@ -1552,7 +1583,7 @@ def cmd_rm(args):
     DIR = resolve_dir(proj)                              # None -> current project
     if not os.path.isdir(DIR) and not (orphans and every):
         sys.exit(f"no chats found for: {DIR}")
-    plan = []                                            # (uuid_or_None, path_or_None, label)
+    plan = []                                            # (uuid_or_None, path_or_None, label, cwd)
     if orphans:
         dirs = ([d for d in sorted(glob.glob(os.path.join(PROJ, "*"))) if under_proj(d)]
                 if every else [DIR])
@@ -1561,7 +1592,7 @@ def cmd_rm(args):
             for d in glob.glob(os.path.join(D, "*/")):
                 b = os.path.basename(d.rstrip("/"))
                 if b == "memory" or b in jsonls: continue
-                plan.append((None, d.rstrip("/"), "orphan sidecar dir"))
+                plan.append((None, d.rstrip("/"), "orphan sidecar dir", None))
     else:
         ids = [a for a in args if not a.startswith("-")]
         if not ids: sys.exit("usage: reap rm <id-prefix>... [--apply] [--orphans] [-p <project>]")
@@ -1573,22 +1604,22 @@ def cmd_rm(args):
             if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {hits}"); continue
             if hits[0] in live:
                 print(f"!! SKIP {hits[0][:8]}: session is live"); continue
-            title, prompt, _, _ = meta(os.path.join(DIR, hits[0] + ".jsonl"))
-            plan.append((hits[0], None, title or prompt or ""))
+            title, prompt, cwd, _ = meta(os.path.join(DIR, hits[0] + ".jsonl"))
+            plan.append((hits[0], None, title or prompt or "", cwd))
     if not plan:
         print("nothing to do"); return
     verb = "purge" if hard else "trash"
-    for uuid, path, label in plan:
+    for uuid, path, label, _ in plan:
         what = (f"orphan dir {pretty(os.path.dirname(path))}/{os.path.basename(path)[:8]}"
                 if path else f"{uuid[:8]} ({', '.join(artifact_kinds(DIR, uuid))})")
         print((verb.upper() + " " if apply else f"would {verb} ") + what)
     if apply:
         st = load_state()
-        for uuid, path, label in plan:
+        for uuid, path, label, cwd in plan:
             if path and hard: shutil.rmtree(path, ignore_errors=True)
             elif path: trash_move(os.path.basename(path), [path], label, os.path.dirname(path))
             elif hard: delete_chat(DIR, uuid)
-            else: trash_chat(DIR, uuid, label)
+            else: trash_chat(DIR, uuid, label, cwd)
             if uuid: st["keep"].pop(uuid, None)
         write_state(st)
         print("done." if hard else f"done, in trash for {TRASH_DAYS}d (reap restore to undo)")
