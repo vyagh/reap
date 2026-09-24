@@ -668,6 +668,21 @@ def trash_stat():
     ents = trash_list()
     return len(ents), sum(e["_size"] for e in ents)
 
+def trash_chats():
+    """Trash entries shaped as chat dicts, so the list's renderer draws them. The age
+    counts from the deletion, and a purge can act on the dict as it is the manifest."""
+    now = time.time(); out = []
+    for m in trash_list():
+        at = m.get("at", 0)
+        out.append(dict(m, uuid=m.get("uuid", ""), label=m.get("label") or "(empty)", proj=m["_proj"],
+                        cwd=m.get("cwd"), size=m["_size"], mt=at, rel=reltime(at, now),
+                        src=m.get("src", "claude"), live=False, kept=False, _left=days_left(at, now)))
+    recent = {}
+    for c in out:
+        recent[c["proj"]] = max(recent.get(c["proj"], 0), c["mt"])
+    out.sort(key=lambda c: (-recent[c["proj"]], c["proj"], -c["mt"]))
+    return out
+
 def prune_trash(days=TRASH_DAYS, no_cli=False):
     """Lazy retention: drop entries older than `days`. Runs once at launch, no daemon, ~ms."""
     if not os.path.isdir(TRASH): return
@@ -752,9 +767,11 @@ def selftest_trash():
             os.makedirs(os.path.join(TRASH, m["uuid"]))
             with open(os.path.join(TRASH, m["uuid"], "reap-meta.json"), "w") as fh: json.dump(m, fh)
         got = {e["uuid"]: e["_proj"] for e in trash_list()}
+        shaped = trash_chats()
     finally:
         shutil.rmtree(TRASH, ignore_errors=True); TRASH = real
     assert got == {"0a": "app", "0b": "app", "0c": "~"}, got
+    assert {c["label"] for c in shaped} == {"old", "new"} and {c["proj"] for c in shaped} == {"app", "~"}, shaped
     print("trash   : old and new manifests list under", got["0a"], "and", got["0c"])
 
 def selftest(chats, where):
@@ -800,7 +817,7 @@ def run_ui(loader, title, grouped):
     locale.setlocale(locale.LC_ALL, "")
     light = term_light() if sys.stdin.isatty() and sys.stdout.isatty() else None
 
-    def main(stdscr):
+    def main(stdscr, loader=loader, grouped=grouped, trashing=False):
         curses.curs_set(0)
         curses.use_default_colors()
         try:                                             # no mouse support is not an error
@@ -860,6 +877,7 @@ def run_ui(loader, title, grouped):
         tn, tb = trash_stat()                            # cached; refreshed only on change
         folded = set()                                   # collapsed project groups
         focus = None                                     # uuid the cursor should land on after a view change
+        changed = False                                  # a trash pass altered the trash
         tip = False                                      # show the pin tip until the next key that isn't a tab switch
         pcache = {}                                       # uuid -> preview turns (lazy, cached)
 
@@ -998,53 +1016,6 @@ def run_ui(loader, title, grouped):
             stdscr.refresh()
             return stdscr.getch() in (ord("y"), ord("Y"))
 
-        def do_trash():
-            sel = ch_reload = 0
-            ents = trash_list()                          # walked once, not per keypress
-            while True:
-                stdscr.erase()
-                h, w = stdscr.getmaxyx()
-                add(0, 1, " trash ", curses.A_REVERSE | curses.A_BOLD)
-                info = f"{plural(len(ents))} · {human(sum(e['_size'] for e in ents))} · recoverable {TRASH_DAYS}d"
-                add(0, max(1, w - len(info) - 2), info, DIM)
-                add(1, 0, RULE * (w - 1), DIM)
-                page = max(1, h - 4)
-                if not ents: add(3, 2, "trash is empty, nothing deleted recently", DIM)
-                sel = max(0, min(sel, len(ents) - 1))
-                topi = max(0, min(sel - page + 1, len(ents) - page)) if len(ents) > page else 0
-                now = time.time()
-                for j in range(min(page, len(ents))):
-                    e = ents[topi + j]; y = 2 + j
-                    left = days_left(e.get("at", 0), now)
-                    row = f" {reltime(e.get('at', 0), now):>4} {human(e['_size']):>6}  "
-                    lbl = fit(e.get("label") or "(empty)", w - len(row) - 12)
-                    if topi + j == sel:
-                        add(y, 0, (row + lbl + f"   {left}d left").ljust(w - 1), SEL)
-                    else:
-                        add(y, 0, row, DIM); add(y, len(row), lbl)
-                        add(y, len(row) + len(lbl) + 3, f"{left}d left", DIM)
-                scrollbar(2, page, topi, len(ents))
-                add(h - 2, 0, RULE * (w - 1), DIM)
-                add(h - 1, 1, "r restore · x purge · E empty · q back", DIM)
-                stdscr.refresh()
-                k = stdscr.getch()
-                if k in (ord("q"), ord("t"), 27): return ch_reload
-                elif ents and k in (curses.KEY_DOWN, ord("j")): sel += 1
-                elif ents and k in (curses.KEY_UP, ord("k")): sel = max(0, sel - 1)
-                elif ents and k in (ord("r"), 10, 13):
-                    restore_entry(ents[sel]["_dir"]); ch_reload = 1; ents = trash_list()
-                elif ents and k == ord("x"):
-                    if confirm_ask(f"purge 1 chat ({human(ents[sel]['_size'])}) permanently?",
-                                   "delete forever · other cancels"):
-                        purge_entry(ents[sel], NO_CODEX_CLI)
-                        ch_reload = 1; ents = trash_list()
-                elif ents and k == ord("E"):
-                    freed = human(sum(e["_size"] for e in ents))
-                    if confirm_ask(f"empty trash: {plural(len(ents))}, {freed}, forever?",
-                                   "frees the disk · gone for good · other cancels"):
-                        for e in ents: purge_entry(e, NO_CODEX_CLI)
-                        ch_reload = 1; ents = trash_list()
-
         while True:
             stdscr.erase()
             h, w = stdscr.getmaxyx()
@@ -1103,18 +1074,21 @@ def run_ui(loader, title, grouped):
             px = cw + 3                                  # detail-pane left column
             rw = w - 1                                   # rules span the whole frame
             all_tabs = grouped and len(tabs) > 1         # the tab bar takes the badge's place
-            if not all_tabs: add(0, 1, " reap ", SEL)
+            if trashing: add(0, 1, " trash ", SEL)
+            elif not all_tabs: add(0, 1, " reap ", SEL)
             kept_count = sum(1 for c in tab_chats if c["kept"])
             filtered = flt and not filtering
             right = []
             if picked: right.append((f"{len(picked)} picked · {human(psz)}", ACC))
-            if filtered:
+            if trashing:
+                right += [(plural(len(tab_chats)), DIM), (human(total), DIM)]
+            elif filtered:
                 shown_n = sum(1 for c in tab_chats if show_kept or not c["kept"])
                 right.append((f"{len(vis)} of {plural(shown_n)}", DIM))
             else:
                 if kept_count: right.append((f"{kept_count} hidden", DIM))
                 if tn: right.append((f"trash {human(tb)}", YEL))
-            if len(tabs) > 1: right.append((title if not grouped else human(total), DIM))
+            if len(tabs) > 1 and not trashing: right.append((title if not grouped else human(total), DIM))
             rtxt = "   ".join(t for t, _ in right)
             x_right = max(8, cw - len(rtxt))
             x = x_right
@@ -1125,7 +1099,7 @@ def run_ui(loader, title, grouped):
             badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
             tab_spans = []                               # (x0, x1, tab) per drawn tab, for clicks
             if len(tabs) > 1:
-                x = 1 if all_tabs else 8
+                x = 9 if trashing else 1 if all_tabs else 8
                 for a in tabs:
                     n = len(chats) if a == "all" else agent_counts.get(a, 0)
                     ttxt = f" {'*' if a == pinned else ''}{a} {n} "
@@ -1135,7 +1109,7 @@ def run_ui(loader, title, grouped):
                 if badge: add(0, x, badge, ACC | curses.A_BOLD); x += len(badge)
                 if tip and not pinned and x + 2 + len(TAB_TIP) < x_right:
                     add(0, x + 2, TAB_TIP, DIM)
-            else:
+            elif not trashing:
                 avail = max(0, x_right - 3 - 8)
                 total_txt = f" · {human(total)}"
                 scope = projlabel(title, max(8, avail - len(total_txt) - len(badge)))
@@ -1233,7 +1207,8 @@ def run_ui(loader, title, grouped):
                     ty += 1
 
             if not vis:
-                add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
+                if trashing: add(3, 3, "trash is empty, nothing deleted in the last 7 days", DIM)
+                else: add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
             base = 2
             row_at = {}                                  # screen row -> item index, for clicks
             if pin is not None:
@@ -1258,19 +1233,24 @@ def run_ui(loader, title, grouped):
                 elif on: mark, mattr = "◉", ACC | curses.A_BOLD
                 else: mark, mattr = "·", DIM
                 ind = "  " if grouped else ""
+                tail = f"{c['_left']}d left" if trashing else ""
+                tail_x = cw - len(tail) - 1              # the tail ends at the band's right edge
+                lend = tail_x - 2 if tail else cw        # titles stop two columns before it
                 if idx == cur and band:
                     x = 1 + len(ind)
                     add(y, x, " " * (cw - x), TINT)
                     add(y, x, mark, TINTLIVE if c["live"] else TINTACC if on else TINT); x += 1
                     seg = f" {c['rel']:>3} {human(c['size']):>6}  "
                     add(y, x, seg, TINT); x += len(seg)
-                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x)))
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, lend - x)))
                     add(y, x, lbl, TINT | curses.A_BOLD)
+                    if tail: add(y, tail_x, tail, TINT)
                     continue
                 if idx == cur:
                     pre = f" {ind}{mark} {c['rel']:>3} {human(c['size']):>6}  "
-                    lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - len(pre))))
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, lend - len(pre))))
                     add(y, 0, (pre + lbl).ljust(cw), SEL)
+                    if tail: add(y, tail_x, tail, SEL)
                     continue
                 add(y, 0, " " + ind); x = 1 + len(ind)
                 dim = DIM
@@ -1284,7 +1264,7 @@ def run_ui(loader, title, grouped):
                 sz = f"{human(c['size']):>6}"
                 add(y, x, sz, dim); x += len(sz) + 2
                 tattr = dim if c["kept"] else 0
-                lbl = fit(c["label"], max(0, min(LABEL_MAX, cw - x)))
+                lbl = fit(c["label"], max(0, min(LABEL_MAX, lend - x)))
                 p = lbl.lower().find(f) if flt else -1
                 if p >= 0:                               # underline the filter match
                     add(y, x, lbl[:p], tattr)
@@ -1292,9 +1272,10 @@ def run_ui(loader, title, grouped):
                     add(y, x + p + len(f), lbl[p + len(f):], tattr)
                 else:
                     add(y, x, lbl, tattr)
+                if tail: add(y, tail_x, tail, YEL if c["_left"] <= 1 else dim)
             if pane:                                     # divider (doubles as scroll track) + detail
                 for j in range(body): add(2 + j, cw + 1, "│", DIM)
-                if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
+                if not trashing and 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
                     draw_detail(items[cur])
             scrollbar(base, body, top, len(items), cw + 1 if pane else cw)
 
@@ -1311,10 +1292,14 @@ def run_ui(loader, title, grouped):
                 x = 1
                 hints = [("?", "keys")]
                 if len(tabs) > 1: hints += [("tab", "agents")]
-                hints += [("s", "sort"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
-                if undo: hints.append(("u", "undo"))
-                hints += [("h", "hide"), (".", "hide again" if show_kept else "show hidden"),
-                          ("t", "trash"), ("/", "filter"), ("q", "quit")]
+                if trashing:
+                    if vis: hints += [("r", "restore"), ("x", "purge"), ("E", "empty")]
+                    hints.append(("q", "back"))
+                else:
+                    hints += [("s", "sort"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
+                    if undo: hints.append(("u", "undo"))
+                    hints += [("h", "hide"), (".", "hide again" if show_kept else "show hidden"),
+                              ("t", "trash"), ("/", "filter"), ("q", "quit")]
                 for key, act in hints:
                     add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
                     add(h - 1, x, act, DIM); x += len(act) + 3
@@ -1337,8 +1322,24 @@ def run_ui(loader, title, grouped):
                 while tail != -1 and stdscr.getch() != -1: pass
                 stdscr.nodelay(False)
                 if tail != -1: continue
-            if ch in (ord("q"), 27): break
+            if ch in (ord("q"), 27) or (trashing and ch == ord("t")): break
             elif ch == ord("?"): do_help()
+            elif trashing and ch in (ord(" "), ord("a"), ord("c"), ord("p"), ord("d"), ord("u"), ord("h"),
+                                     ord("."), ord("s"), ord("/"), 10, 13): pass
+            elif trashing and ch in (ord("r"), ord("x"), ord("E")):
+                c = items[cur][1] if ci and items[cur][0] == "chat" else None
+                if ch == ord("E") and tab_chats:
+                    freed = human(sum(e["size"] for e in tab_chats))
+                    if confirm_ask(f"empty trash: {plural(len(tab_chats))}, {freed}, forever?",
+                                   "frees the disk · gone for good · other cancels"):
+                        for e in tab_chats: purge_entry(e, NO_CODEX_CLI)
+                        changed = True; reload()
+                elif c and ch == ord("r"):
+                    restore_entry(c["_dir"]); changed = True; reload()
+                elif c and ch == ord("x"):
+                    if confirm_ask(f"purge 1 chat ({human(c['size'])}) permanently?",
+                                   "delete forever · other cancels"):
+                        purge_entry(c, NO_CODEX_CLI); changed = True; reload()
             elif ci and ch in (curses.KEY_DOWN, ord("j")): cur = ci[min(pos + 1, len(ci) - 1)]
             elif ci and ch in (curses.KEY_UP, ord("k")): cur = ci[max(pos - 1, 0)]
             elif ci and ch == curses.KEY_NPAGE: cur = ci[min(pos + body, len(ci) - 1)]
@@ -1404,7 +1405,9 @@ def run_ui(loader, title, grouped):
             elif ch == ord("p"):
                 if ci and items[cur][0] == "chat": do_peek(items[cur][1])
             elif ch == ord("t"):
-                if do_trash():                           # trash changed -> refresh list + stat
+                edited = main(stdscr, trash_chats, True, True)
+                pinned = load_state().get("pin")
+                if edited:                               # trash changed -> refresh list + stat
                     reload()
                     undo = [g for g in ([d for d in g if os.path.isdir(d)] for g in undo) if g]
                     cur = top = 0
@@ -1493,6 +1496,7 @@ def run_ui(loader, title, grouped):
                     else: msg = ("warn", "nothing trashed")
                 else:
                     msg = ("warn", "cancelled")
+        return changed
 
     curses.wrapper(main)
 
