@@ -644,8 +644,8 @@ def dir_cwd(d):
 def trash_list():
     """Trash entries newest-first, each meta annotated with _dir, _size and _proj. A Codex
     entry with no moved files shows the archived file's size, read live. Entries from
-    before the manifest carried a project get one from dir, else '~', and the cwd of
-    a transcript still in that dir, so the band reads like the list's."""
+    before the manifest carried a project get one from dir, else '~', and the cwd from the
+    trashed transcript's header, else from one still in that dir, so the band reads like the list's."""
     out = []
     for d in glob.glob(os.path.join(TRASH, "*")):
         if not os.path.isdir(d): continue
@@ -653,7 +653,9 @@ def trash_list():
         if not isinstance(m, dict): continue
         m["_dir"] = d
         m["_proj"] = m.get("proj") or (pretty(m["dir"]) if m.get("dir") else "~")
-        if not m.get("cwd") and m.get("dir"): m["cwd"] = dir_cwd(m["dir"])
+        if not m.get("cwd"):
+            tp = trash_transcript(m)
+            m["cwd"] = (meta(tp)[2] if os.path.isfile(tp) else None) or (dir_cwd(m["dir"]) if m.get("dir") else None)
         if m.get("src") == "codex" and not m.get("moved"):
             arch = m.get("archived")
             m["_size"] = os.path.getsize(arch) if arch and os.path.exists(arch) else 0
@@ -668,6 +670,13 @@ def trash_stat():
     ents = trash_list()
     return len(ents), sum(e["_size"] for e in ents)
 
+def trash_transcript(m):
+    """Where a trash entry's transcript lives: Codex's own archive for an entry that
+    moved nothing, else the .jsonl moved into the entry dir. '' when there is none."""
+    if m.get("src") == "codex" and not m.get("moved"): return m.get("archived") or ""
+    return next((os.path.join(m["_dir"], os.path.basename(b)) for _, b in m.get("moved") or []
+                 if b.endswith(".jsonl")), "")
+
 def trash_chats():
     """Trash entries shaped as chat dicts, so the list's renderer draws them. The age
     counts from the deletion, and a purge can act on the dict as it is the manifest."""
@@ -676,7 +685,8 @@ def trash_chats():
         at = m.get("at", 0)
         out.append(dict(m, uuid=m.get("uuid", ""), label=m.get("label") or "(empty)", proj=m["_proj"],
                         cwd=m.get("cwd"), size=m["_size"], mt=at, rel=reltime(at, now),
-                        src=m.get("src", "claude"), live=False, kept=False, _left=days_left(at, now)))
+                        src=m.get("src", "claude"), live=False, kept=False, _left=days_left(at, now),
+                        titled=bool(m.get("label")), path=trash_transcript(m), msgs=None))
     recent = {}
     for c in out:
         recent[c["proj"]] = max(recent.get(c["proj"], 0), c["mt"])
@@ -758,20 +768,28 @@ def print_static(chats, grouped=False):
 def selftest_trash():
     """A trash entry written before the manifest carried proj and cwd still lists."""
     global TRASH
-    old = {"uuid": "0a", "dir": os.path.join(PROJ, dirname_for(HOME + "/app")), "label": "old", "at": 1, "moved": []}
+    old = {"uuid": "0a", "dir": os.path.join(PROJ, dirname_for(HOME + "/app")), "label": "old", "at": 1,
+           "moved": [["/gone/0a.jsonl", "0a.jsonl"]]}
     new = dict(old, uuid="0b", label="new", proj="app", cwd=HOME + "/app")
     home = dict(old, uuid="0c", dir=os.path.join(PROJ, dirname_for(HOME)))
+    deep = dict(old, uuid="0d", label="deep", dir=os.path.join(PROJ, dirname_for(HOME + "/work/deep-app")),
+                moved=[["/gone/0d.jsonl", "0d.jsonl"]])
     real, TRASH = TRASH, tempfile.mkdtemp()
     try:
-        for m in (old, new, home):
+        for m in (old, new, home, deep):
             os.makedirs(os.path.join(TRASH, m["uuid"]))
             with open(os.path.join(TRASH, m["uuid"], "reap-meta.json"), "w") as fh: json.dump(m, fh)
+        with open(os.path.join(TRASH, "0d", "0d.jsonl"), "w") as fh:
+            fh.write(json.dumps({"type": "user", "cwd": HOME + "/work/deep-app"}) + "\n")
         got = {e["uuid"]: e["_proj"] for e in trash_list()}
         shaped = trash_chats()
     finally:
         shutil.rmtree(TRASH, ignore_errors=True); TRASH = real
-    assert got == {"0a": "app", "0b": "app", "0c": "~"}, got
-    assert {c["label"] for c in shaped} == {"old", "new"} and {c["proj"] for c in shaped} == {"app", "~"}, shaped
+    assert got == {"0a": "app", "0b": "app", "0c": "~", "0d": "work-deep-app"}, got
+    assert {c["label"] for c in shaped} == {"old", "new", "deep"}, shaped
+    assert {c["proj"] for c in shaped} == {"app", "~", "work-deep-app"}, shaped
+    assert [split_path(c["cwd"], c["proj"])[0] for c in shaped if c["label"] == "deep"] == ["deep-app"], shaped
+    assert {os.path.basename(c["path"]) for c in shaped if c["label"] == "old"} == {"0a.jsonl"}, shaped
     print("trash   : old and new manifests list under", got["0a"], "and", got["0c"])
 
 def selftest(chats, where):
@@ -1185,14 +1203,22 @@ def run_ui(loader, title, grouped):
                     state = (f"hidden {kd} · h brings it back", DIM)
                 elif c["live"]:
                     state = ("running now", LIVE)
+                elif trashing:
+                    state = (f"deleted {time.strftime('%b %d', time.localtime(c['mt']))}", DIM)
                 src = c.get("src", "claude")
                 add(4, px, src, DIM)
                 if state:
                     txt, attr = state
                     add(4, px + len(src), " · ", DIM)
                     add(4, px + len(src) + 3, fit(txt, max(0, pw - len(src) - 3)), attr)
+                if trashing:
+                    lx = px + len(src) + 3 + len(state[0])
+                    add(4, lx, " · ", DIM)
+                    add(4, lx + 3, f"{c['_left']}d left", YEL if c["_left"] <= 1 else DIM)
+                if trashing and c["msgs"] is None:       # header parse, once per entry
+                    c["msgs"] = codex_scan(c["path"])[1] if src == "codex" else meta(c["path"])[3]
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
-                bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')} · {when}"
+                bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')}" + ("" if trashing else f" · {when}")
                 add(5, px, fit(bits, pw), DIM)
                 add(6, px, RULE * pw, DIM)
                 turns = pcache.get(c["uuid"])            # lazy + cached: smooth to hold j
@@ -1278,7 +1304,7 @@ def run_ui(loader, title, grouped):
                 if tail: add(y, tail_x, tail, YEL if c["_left"] <= 1 else dim)
             if pane:                                     # divider (doubles as scroll track) + detail
                 for j in range(body): add(2 + j, cw + 1, "│", DIM)
-                if not trashing and 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
+                if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
                     draw_detail(items[cur])
             scrollbar(base, body, top, len(items), cw + 1 if pane else cw)
 
@@ -1296,7 +1322,7 @@ def run_ui(loader, title, grouped):
                 hints = [("?", "keys")]
                 if len(tabs) > 1: hints += [("tab", "agents")]
                 if trashing:
-                    if vis: hints += [("space", "pick"), ("r", "restore"), ("x", "purge"), ("E", "empty")]
+                    if vis: hints += [("space", "pick"), ("r", "restore"), ("x", "purge"), ("E", "empty"), ("p", "peek")]
                     hints += [("/", "filter"), ("q", "back")]
                 else:
                     hints += [("s", "sort"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
@@ -1327,8 +1353,7 @@ def run_ui(loader, title, grouped):
                 if tail != -1: continue
             if ch in (ord("q"), 27) or (trashing and ch == ord("t")): break
             elif ch == ord("?"): do_help()
-            elif trashing and ch in (ord("p"), ord("d"), ord("u"), ord("h"), ord("."), ord("s"),
-                                     10, 13): pass
+            elif trashing and ch in (ord("d"), ord("u"), ord("h"), ord("."), ord("s"), 10, 13): pass
             elif trashing and ch in (ord("r"), ord("x"), ord("E")):
                 sel = [by[u] for u in picked if u in by]
                 if ch == ord("r"):
