@@ -29,13 +29,14 @@ Deletes go to a trash and stay recoverable for 7 days unless you pass --hard
 Picker keys (press ? inside for this list):
   up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
   space pick (skips live)   a toggle select-all   c clear
-  p peek (read-only preview)   d / enter delete (to trash, asks to confirm)
+  enter open the chat in its agent   p peek (read-only preview)
+  d delete (to trash, asks to confirm)
   u undo last delete   t trash browser (pick, restore, purge, empty)
   s sort recency<->size   tab/shift-tab switch agent   P pin the tab reap opens on
   / filter (title/uuid/workspace)   ? keys   q quit
   mouse: click a tab, chat row or group line (folds it), wheel scrolls
 """
-import fcntl, json, os, re, subprocess, sys, glob, time, shutil, textwrap, tempfile
+import fcntl, json, os, re, signal, subprocess, sys, glob, time, shutil, textwrap, tempfile
 from collections import Counter
 
 __version__ = "0.4.0"
@@ -68,7 +69,8 @@ HELP_LINES = [
     ("", "  space          toggle pick (skips live sessions)"),
     ("", "  a / c          toggle select-all shown / clear"),
     ("", "  p              peek: read-only preview"),
-    ("", "  d or enter     delete selected → trash (confirms first)"),
+    ("", "  enter          open the chat under the cursor in its agent (quits reap)"),
+    ("", "  d              delete selected → trash (confirms first)"),
     ("", "  h              hide: out of the list until you ask, never deleted (on picked hidden chats: unhide)"),
     ("", ""),
     ("H", "trash · undo"),
@@ -346,18 +348,24 @@ def codex_meta(path):
     if not p.get("id"): return None
     return {"id": p["id"], "cwd": p.get("cwd"), "thread_source": p.get("thread_source")}
 
-def codex_last_cwd(path, tail=65536):
+def codex_last_cwd(path, limit=65536):
     """Folder of the newest turn: codex resumes a chat where it was last used, which
-    can differ from the session_meta cwd. Reads only the file's tail."""
+    can differ from the session_meta cwd. Reads back from the end, `limit` bytes at
+    most (None: until a turn record turns up, for opening the chat)."""
     try:
         with open(path, "rb") as fh:
-            fh.seek(max(0, os.path.getsize(path) - tail))
-            lines = fh.read().decode("utf-8", "replace").splitlines()
+            end = os.path.getsize(path); stop = 0 if limit is None else max(0, end - limit)
+            rest = b""
+            while end > stop:
+                start = max(stop, end - 65536); fh.seek(start)
+                lines = (fh.read(end - start) + rest).split(b"\n")
+                rest = lines.pop(0) if start > 0 else b""
+                for line in reversed(lines):
+                    if b'"type":"turn_context"' not in line: continue
+                    try: return (json.loads(line).get("payload") or {}).get("cwd")
+                    except Exception: continue
+                end = start
     except OSError: return None
-    for line in reversed(lines):
-        if '"type":"turn_context"' not in line: continue
-        try: return (json.loads(line).get("payload") or {}).get("cwd")
-        except Exception: continue
     return None
 
 def codex_scan(path, cap=400):
@@ -575,6 +583,21 @@ def run_codex(args):
         return False, "codex not found on PATH"
     except subprocess.TimeoutExpired:
         return False, "timed out"
+
+def resume_argv(c):
+    if c.get("src") == "codex": return ["codex", "resume", c["uuid"]]
+    return ["claude", "--resume", c["uuid"]]
+
+def open_chat(argv, cwd):
+    # python starts with SIGPIPE and SIGXFSZ ignored and exec keeps that; a shell
+    # hands the agent default dispositions, so match it
+    for sig in (signal.SIGPIPE, signal.SIGXFSZ):
+        signal.signal(sig, signal.SIG_DFL)
+    # and cd leaves PWD/OLDPWD set
+    os.environ["OLDPWD"] = os.environ.get("PWD") or os.getcwd()
+    os.environ["PWD"] = cwd
+    os.chdir(cwd)
+    os.execvp(argv[0], argv)
 
 def trash_codex(cid, label, no_cli, proj, cwd):
     """reap never moves a Codex chat's own files: state_5.sqlite's threads.rollout_path
@@ -848,6 +871,8 @@ def run_ui(loader, title, grouped):
     import curses, locale
     locale.setlocale(locale.LC_ALL, "")
     light = term_light() if sys.stdin.isatty() and sys.stdout.isatty() else None
+
+    launch = []
 
     def main(stdscr, loader=loader, grouped=grouped, trashing=False):
         curses.curs_set(0)
@@ -1334,7 +1359,7 @@ def run_ui(loader, title, grouped):
                 add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
             else:
                 x = 1
-                hints = [("?", "keys")]
+                hints = [("?", "keys")] + ([] if trashing else [("enter", "open")])
                 if len(tabs) > 1: hints += [("tab", "agents")]
                 if trashing:
                     if vis: hints += [("space", "pick"), ("r", "restore"), ("x", "purge"), ("E", "empty"), ("p", "peek")]
@@ -1368,7 +1393,8 @@ def run_ui(loader, title, grouped):
                 if tail != -1: continue
             if ch in (ord("q"), 27) or (trashing and ch == ord("t")): break
             elif ch == ord("?"): do_help()
-            elif trashing and ch in (ord("d"), ord("u"), ord("h"), ord("."), ord("s"), 10, 13): pass
+            elif trashing and ch in (10, 13): msg = ("warn", "restore it first (r)")
+            elif trashing and ch in (ord("d"), ord("u"), ord("h"), ord("."), ord("s")): pass
             elif trashing and ch in (ord("r"), ord("x"), ord("E")):
                 sel = [by[u] for u in picked if u in by]
                 if ch == ord("r"):
@@ -1538,7 +1564,16 @@ def run_ui(loader, title, grouped):
                     focus = near[0]["uuid"] if near else None
                 else:
                     cur = top = 0
-            elif ch in (ord("d"), 10, 13):
+            elif ch in (10, 13):
+                if ci and items[cur][0] == "chat":
+                    c = items[cur][1]
+                    if c.get("src") == "codex": c["cwd"] = codex_last_cwd(c["path"], None) or c["cwd"]
+                    argv = resume_argv(c)
+                    if c["live"]: msg = ("warn", "already open elsewhere")
+                    elif not (c["cwd"] and os.path.isdir(c["cwd"])): msg = ("warn", f"folder gone: {c['cwd'] or '?'}")
+                    elif not shutil.which(argv[0]): msg = ("warn", f"{argv[0]} not found on PATH")
+                    else: launch.append((argv, c["cwd"])); break
+            elif ch == ord("d"):
                 if not picked:
                     msg = ("warn", "nothing selected"); continue
                 sel = [by[u] for u in picked if u in by]
@@ -1567,6 +1602,7 @@ def run_ui(loader, title, grouped):
         return changed, restored
 
     curses.wrapper(main)
+    if launch: open_chat(*launch[0])
 
 def print_help():
     on = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
@@ -1610,7 +1646,7 @@ def print_help():
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
                       ("select", "space pick   a toggle select-all   c clear   h hide"),
-                      ("act", "p peek   d/enter delete (to trash)   u undo   t trash browser"),
+                      ("act", "enter open   p peek   d delete (to trash)   u undo   t trash browser"),
                       ("view", "s sort   tab/shift-tab agent   P pin tab   . hidden   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
