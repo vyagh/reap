@@ -1690,8 +1690,10 @@ def cmd_rm(args):
     proj = pop_opt(args, "-p")
     DIR = resolve_dir(proj)                              # None -> current project
     if not os.path.isdir(DIR) and not (orphans and every):
-        sys.exit(f"no chats found for: {DIR}")
+        if orphans or not any(c["dir"] == DIR for c in load_codex(load_state()["keep"])):
+            sys.exit(f"no chats found for: {DIR}")
     plan = []                                            # (uuid_or_None, path_or_None, label, cwd)
+    codex = {}                                           # uuid -> chat, for the ids in DIR
     if orphans:
         dirs = ([d for d in sorted(glob.glob(os.path.join(PROJ, "*"))) if under_proj(d)]
                 if every else [DIR])
@@ -1705,13 +1707,17 @@ def cmd_rm(args):
         ids = [a for a in args if not a.startswith("-")]
         if not ids: sys.exit("usage: reap rm <id-prefix>... [--apply] [--orphans] [-p <project>]")
         live = live_session_ids()
+        codex.update({c["uuid"]: c for c in load_codex(load_state()["keep"]) if c["dir"] == DIR})
         for tok in ids:
             hits = [os.path.basename(p)[:-6] for p in glob.glob(os.path.join(DIR, "*.jsonl"))
                     if os.path.basename(p).startswith(tok)]
+            hits += [u for u in codex if u.startswith(tok)]
             if not hits: print(f"!! no chat matches '{tok}'"); continue
             if len(hits) > 1: print(f"!! '{tok}' is ambiguous: {hits}"); continue
-            if hits[0] in live:
+            if hits[0] in live or (hits[0] in codex and codex[hits[0]]["live"]):
                 print(f"!! SKIP {hits[0][:8]}: session is live"); continue
+            if hits[0] in codex:
+                plan.append((hits[0], None, codex[hits[0]]["label"], codex[hits[0]]["cwd"])); continue
             title, prompt, cwd, _ = meta(os.path.join(DIR, hits[0] + ".jsonl"))
             plan.append((hits[0], None, title or prompt or "", cwd))
     if not plan:
@@ -1719,12 +1725,17 @@ def cmd_rm(args):
     verb = "purge" if hard else "trash"
     for uuid, path, label, _ in plan:
         what = (f"orphan dir {pretty(os.path.dirname(path))}/{os.path.basename(path)[:8]}"
-                if path else f"{uuid[:8]} ({', '.join(artifact_kinds(DIR, uuid))})")
+                if path else f"{uuid[:8]} (codex)" if uuid in codex
+                else f"{uuid[:8]} ({', '.join(artifact_kinds(DIR, uuid))})")
         print((verb.upper() + " " if apply else f"would {verb} ") + what)
     if apply:
         st = load_state()
         for uuid, path, label, cwd in plan:
-            if path and hard: shutil.rmtree(path, ignore_errors=True)
+            if uuid in codex:
+                dest, err = trash_codex(uuid, label, NO_CODEX_CLI, codex[uuid]["proj"], cwd)
+                if err: print(f"!! {uuid[:8]}: {err}"); continue
+                if hard: purge_entry({**read_json(os.path.join(dest, "reap-meta.json")), "_dir": dest}, NO_CODEX_CLI)
+            elif path and hard: shutil.rmtree(path, ignore_errors=True)
             elif path: trash_move(os.path.basename(path), [path], label, os.path.dirname(path))
             elif hard: delete_chat(DIR, uuid); drop_bare_proj(DIR)
             else: trash_chat(DIR, uuid, label, cwd)
