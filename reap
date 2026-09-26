@@ -252,39 +252,63 @@ def reltime(mt, now):
     if d < 86400 * 30: return f"{int(d // 86400)}d"
     return f"{int(d // (86400 * 30))}mo"
 
-def meta(path):
+HEAD_MAX = 4 << 20                                       # meta(): most of the start it will read
+TAIL_MAX = 64 << 10                                      # ...and the end, where late titles land
+WHOLE_MAX = 256 << 10                                    # at or under this a transcript is read whole
+
+def meta(path, full=False):
     # Only title (custom-title/agent-name) and the first user prompt are needed,
     # and they live in the header. json.loads is the launch hotspot, so cheaply
     # reject lines that can't carry either before parsing: title and prompt stay
-    # byte-identical to a full parse. n counts your prompts by substring, a user
-    # record that isn't a tool result or a meta line. Assistant records can't be
-    # counted this way (one record per content block), so they're left out.
+    # byte-identical to a full parse. Launch reads just the start (until a prompt
+    # and a cwd are in) and the last 64 KB (late titles), so n, the prompt count,
+    # is None. full reads the whole file and counts your prompts by substring, a
+    # user record that isn't a tool result or a meta line. Assistant records can't
+    # be counted this way (one record per content block), so they're left out.
     title = prompt = cwd = None
-    n = 0
+    n = 0 if full else None
+
+    def feed(line):
+        nonlocal title, prompt, cwd, n
+        if full and '"type":"user"' in line and '"tool_result"' not in line and '"isMeta":true' not in line:
+            n += 1
+        is_title = '"custom-title"' in line or '"agent-name"' in line or '"ai-title"' in line
+        want_cwd = cwd is None and '"cwd"' in line   # real path, ~1 extra parse per file
+        if not is_title and not want_cwd and (prompt is not None or '"type":"user"' not in line):
+            return
+        try: o = json.loads(line)
+        except Exception: return
+        if cwd is None and o.get("cwd"): cwd = o["cwd"]
+        t = o.get("type")
+        if t == "custom-title" and o.get("customTitle"): title = clean(o["customTitle"])
+        elif t == "agent-name" and o.get("agentName") and not title: title = clean(o["agentName"])
+        elif t == "ai-title" and o.get("aiTitle") and not title: title = clean(o["aiTitle"])
+        elif prompt is None and t == "user" and not o.get("isMeta"):
+            c = o.get("message", {}).get("content")
+            if isinstance(c, list):
+                c = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+            if isinstance(c, str):
+                c = c.strip()
+                if c and not c.startswith(("<local-command", "<command-", "Caveat:")):
+                    prompt = clean(" ".join(c.split()))
+
     try:
-        with open(path) as fh:
-            for line in fh:
-                if '"type":"user"' in line and '"tool_result"' not in line and '"isMeta":true' not in line:
-                    n += 1
-                is_title = '"custom-title"' in line or '"agent-name"' in line or '"ai-title"' in line
-                want_cwd = cwd is None and '"cwd"' in line   # real path, ~1 extra parse per file
-                if not is_title and not want_cwd and (prompt is not None or '"type":"user"' not in line):
-                    continue
-                try: o = json.loads(line)
-                except Exception: continue
-                if cwd is None and o.get("cwd"): cwd = o["cwd"]
-                t = o.get("type")
-                if t == "custom-title" and o.get("customTitle"): title = clean(o["customTitle"])
-                elif t == "agent-name" and o.get("agentName") and not title: title = clean(o["agentName"])
-                elif t == "ai-title" and o.get("aiTitle") and not title: title = clean(o["aiTitle"])
-                elif prompt is None and t == "user" and not o.get("isMeta"):
-                    c = o.get("message", {}).get("content")
-                    if isinstance(c, list):
-                        c = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
-                    if isinstance(c, str):
-                        c = c.strip()
-                        if c and not c.startswith(("<local-command", "<command-", "Caveat:")):
-                            prompt = clean(" ".join(c.split()))
+        if full:
+            with open(path) as fh:
+                for line in fh: feed(line)
+        else:
+            with open(path, "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                read = 0
+                while size <= WHOLE_MAX or (read < HEAD_MAX and not (prompt and cwd)):
+                    line = fh.readline()
+                    if not line: break
+                    read += len(line); feed(line.decode("utf-8", "replace"))
+                if read < size:
+                    start = max(read, size - TAIL_MAX)
+                    fh.seek(start - 1)                   # one byte back: tells a cut line from a whole one
+                    tail = fh.read().partition(b"\n")[2] if start > read else fh.read()
+                    for line in tail.decode("utf-8", "replace").split("\n"): feed(line)
     except OSError: pass
     return title, prompt, cwd, n
 
@@ -457,7 +481,7 @@ def load_codex(keep, subagents=False):
         })
     return out
 
-def load_claude_chats(DIR, keep):
+def load_claude_chats(DIR, keep, full=False):
     live = live_session_ids()
     now = time.time()
     proj = pretty(DIR)
@@ -466,7 +490,7 @@ def load_claude_chats(DIR, keep):
         uuid = os.path.basename(jp)[:-6]
         sd = os.path.join(DIR, uuid)
         fh = os.path.join(CLAUDE_HOME, "file-history", uuid)   # edit snapshots, the big leftover
-        title, prompt, cwd, n = meta(jp)
+        title, prompt, cwd, n = meta(jp, full)
         mt = os.path.getmtime(jp)
         size = os.path.getsize(jp) + (dirsize(sd) if os.path.isdir(sd) else 0)
         size += dirsize(fh) if os.path.isdir(fh) else 0
@@ -481,14 +505,14 @@ def load_claude_chats(DIR, keep):
         })
     return chats
 
-def load_chats(DIR, subagents=False):
+def load_chats(DIR, subagents=False, full=False):
     keep = load_state()["keep"]
-    chats = load_claude_chats(DIR, keep)
+    chats = load_claude_chats(DIR, keep, full)
     chats += [c for c in load_codex(keep, subagents) if c["dir"] == DIR]
     chats.sort(key=lambda c: c["mt"], reverse=True)
     return chats
 
-def load_all(tmp=False, subagents=False):
+def load_all(tmp=False, subagents=False, full=False):
     """Ephemeral /tmp scratchpad sessions (macOS: /private/tmp) are hidden by default:
     nothing you'd want to keep lives there, and their uuid-laden paths swamp the group headers."""
     keep = load_state()["keep"]
@@ -496,7 +520,7 @@ def load_all(tmp=False, subagents=False):
     for d in sorted(glob.glob(os.path.join(PROJ, "*"))):
         if not under_proj(d): continue
         if not tmp and os.path.basename(d).startswith(("-tmp-", "-private-tmp-")): continue
-        chats += load_claude_chats(d, keep)
+        chats += load_claude_chats(d, keep, full)
     chats += load_codex(keep, subagents)
     recent = {}
     for c in chats:
@@ -845,6 +869,13 @@ def selftest(chats, where):
         t = peek_turns(chats[0]["path"], src=chats[0].get("src", "claude"))
         print(f"peek({chats[0]['short']}): {len(t)} turns, first =", (t[0] if t else "none"))
     print_static(chats[:6], grouped=True)
+    bad = []
+    for c in chats:
+        if c.get("src", "claude") != "claude": continue
+        ends, whole = meta(c["path"]), meta(c["path"], True)
+        bad += [f"{c['short']} {f}" for i, f in enumerate(("title", "prompt", "cwd")) if ends[i] != whole[i]]
+    assert not bad, f"ends-only read differs from a full read: {bad}"
+    print(f"meta    : ends-only read matches a full read on {sum(c.get('src', 'claude') == 'claude' for c in chats)} chats")
     selftest_trash()
 
 def term_light():
@@ -945,6 +976,7 @@ def run_ui(loader, title, grouped, home=None):
         restored = []                                    # trash chats put back, in order
         tip = False                                      # show the pin tip until the next key that isn't a tab switch
         pcache = {}                                       # uuid -> preview turns (lazy, cached)
+        counts = {}                                       # uuid -> prompt count, once the cursor rested there
 
         def tab_list(chats):
             """Installed agents (data dir present, even at 0 chats), in registration
@@ -967,6 +999,7 @@ def run_ui(loader, title, grouped, home=None):
             nonlocal chats, by, tn, tb, keep_map, tabs, agent_counts, tab
             keep_map = load_state()["keep"]
             chats = loader(); by = {c["uuid"]: c for c in chats}
+            for c in chats: c["msgs"] = counts.get(c["uuid"], c["msgs"])
             tn, tb = trash_stat()
             tabs, agent_counts = tab_list(chats)
             if tab not in tabs: tab = "all" if len(tabs) > 1 else None
@@ -1265,10 +1298,11 @@ def run_ui(loader, title, grouped, home=None):
                     lx = px + len(src) + 3 + len(state[0])
                     add(4, lx, " · ", DIM)
                     add(4, lx + 3, f"{c['_left']}d left", YEL if c["_left"] <= 1 else DIM)
-                if trashing and c["msgs"] is None:       # header parse, once per entry
-                    c["msgs"] = codex_scan(c["path"])[1] if src == "codex" else meta(c["path"])[3]
+                if trashing and c["msgs"] is None and src == "codex":   # once per entry
+                    c["msgs"] = codex_scan(c["path"])[1]
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
-                bits = f"{human(c['size'])} · {plural(c['msgs'], 'prompt')}" + ("" if trashing else f" · {when}")
+                bits = " · ".join([human(c["size"])] + ([plural(c["msgs"], "prompt")] if c["msgs"] is not None else [])
+                                  + ([] if trashing else [when]))
                 add(5, px, fit(bits, pw), DIM)
                 add(6, px, RULE * pw, DIM)
                 turns = pcache.get(c["uuid"])            # lazy + cached: smooth to hold j
@@ -1384,7 +1418,14 @@ def run_ui(loader, title, grouped, home=None):
                     add(h - 1, x, act, DIM); x += len(act) + 3
             stdscr.refresh()
 
+            at = items[cur][1] if 0 <= cur < len(items) and items[cur][0] == "chat" else None
+            rest = at if at and at["msgs"] is None else None
+            stdscr.timeout(250 if rest else -1)          # a wait only while a count is owed
             ch = stdscr.getch()
+            stdscr.timeout(-1)                           # the dialogs' getch must block
+            if ch == -1 and rest:
+                rest["msgs"] = counts[rest["uuid"]] = meta(rest["path"], True)[3]
+                continue
             msg = None
             tip = False
             if filtering:
@@ -1684,11 +1725,11 @@ def cmd_ls(args):
     if pop_flag(args, "--all"): sys.exit(ALL_GONE)
     proj = next((a for a in args if not a.startswith("-")), None)
     if proj is None:
-        chats = load_all(tmp, subagents); grouped = True
+        chats = load_all(tmp, subagents, True); grouped = True   # ls shows the count, so read in full
     else:
         DIR = resolve_dir(None if proj == "." else proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
-        chats = load_chats(DIR, subagents); grouped = False
+        chats = load_chats(DIR, subagents, True); grouped = False
     chats = [c for c in chats if c["kept"]] if kept_only else [c for c in chats if not c["kept"]]
     print_static(chats, grouped=grouped)
 
@@ -1813,17 +1854,17 @@ def main():
     proj = next((a for a in rest if not a.startswith("-")), None)
     home = None
     if proj is None:
-        loader, title, grouped, where = ((lambda t=tmp, s=subagents: load_all(t, s)), "all projects", True,
+        loader, title, grouped, where = ((lambda full=False, t=tmp, s=subagents: load_all(t, s, full)), "all projects", True,
                                          "all projects")
         home = resolve_dir(None)
     else:
         DIR = resolve_dir(None if proj == "." else proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
         title = os.getcwd() if proj == "." else pretty(DIR)
-        loader, grouped, where = (lambda d=DIR, s=subagents: load_chats(d, s)), False, title
+        loader, grouped, where = (lambda full=False, d=DIR, s=subagents: load_chats(d, s, full)), False, title
 
-    if st: selftest(loader(), where)
-    elif not sys.stdout.isatty(): print_static(loader(), grouped)
+    if st: selftest(loader(True), where)                 # non-interactive: read in full for the count
+    elif not sys.stdout.isatty(): print_static(loader(True), grouped)
     else: run_ui(loader, title, grouped, home)
 
 if __name__ == "__main__":
