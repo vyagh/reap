@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""reap, Claude Code chat manager: view, peek and delete local chats.
+"""reap, Claude Code and Codex chat manager: view, peek, open and delete local chats.
 
-A chat is its transcript, sidecar dir, job record and per-session state
+A Claude chat is its transcript, sidecar dir, job record and per-session state
 (file-history, session-env, tasks). reap trashes all of it together, so it is
-gone from /resume and the agents view.
+gone from /resume and the agents view. A Codex chat is its rollout file, which
+reap archives through the codex CLI.
 
 Usage:
   reap                     picker across every project, cursor on the current folder's
@@ -1614,11 +1615,12 @@ def print_help():
     B = lambda s: c(s, "1"); D = lambda s: c(s, "2")
     CMD = lambda s: c(s, "36"); HEAD = lambda s: c(s, "1;4")        # cyan / bold-underline
 
-    print(f"{B('reap')} {D(': Claude Code chat manager')}")
-    print(D("view, peek and delete your local Claude Code chats"))
+    print(f"{B('reap')} {D(': Claude Code and Codex chat manager')}")
+    print(D("view, peek, open and delete your local chats"))
     print()
-    print(D("a chat = transcript + sidecar dir + job record + file-history, session-env, tasks."))
+    print(D("a claude chat = transcript + sidecar dir + job record + file-history, session-env, tasks."))
     print(D("reap trashes all of it, so it's gone from /resume and the agents view."))
+    print(D("a codex chat = its rollout file, archived through the codex CLI."))
     print()
     print(HEAD("usage"))
     usage = [
