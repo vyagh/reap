@@ -29,7 +29,7 @@ Deletes go to a trash and stay recoverable for 7 days unless you pass --hard
 
 Picker keys (press ? inside for this list):
   up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
-  space pick (skips live)   a toggle select-all   c clear
+  space pick (skips live)   a toggle select-all
   enter open the chat in its agent   p peek (read-only preview)
   d delete (to trash, asks to confirm)
   u undo last delete   t trash browser (pick, restore, purge, empty)
@@ -69,7 +69,7 @@ HELP_LINES = [
     ("", ""),
     ("H", "select & act"),
     ("", "  space          toggle pick (skips live sessions)"),
-    ("", "  a / c          toggle select-all shown / clear"),
+    ("", "  a              toggle select-all shown"),
     ("", "  p              peek: read-only preview"),
     ("", "  enter          open the chat under the cursor in its agent (quits reap)"),
     ("", "  d              delete selected → trash (confirms first)"),
@@ -1488,7 +1488,6 @@ def run_ui(loader, title, grouped, home=None):
                 folded.clear() if folded >= allp else folded.update(allp)
                 cur = top = 0
             elif ch == ord("/"): filtering = True; flt = ""
-            elif ch == ord("c"): picked.clear()
             elif ch == ord("a"):                         # toggle: all shown picked -> unpick them
                 sable = [c["uuid"] for c in vis if not c["live"]]
                 if sable and all(u in picked for u in sable):
@@ -1651,7 +1650,7 @@ def print_help():
     print()
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
-                      ("select", "space pick   a toggle select-all   c clear   h hide"),
+                      ("select", "space pick   a toggle select-all   h hide"),
                       ("act", "enter open   p peek   d delete (to trash)   u undo   t trash browser"),
                       ("view", "s sort   tab/shift-tab agent   P pin tab   . hidden   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
