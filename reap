@@ -33,7 +33,7 @@ Picker keys (press ? inside for this list):
   enter open the chat in its agent   p peek (read-only preview)
   d delete (to trash, asks to confirm)
   u undo last delete   t trash browser (pick, restore, purge, empty)
-  s sort recency<->size   tab/shift-tab switch agent   P pin the tab reap opens on
+  s sort newest/oldest/biggest/smallest   tab/shift-tab switch agent   P pin the tab reap opens on
   / filter (title/uuid/workspace)   ? keys   q quit
   mouse: click a tab, chat row or group line (folds it), wheel scrolls
 """
@@ -48,6 +48,7 @@ PROJ = os.path.join(CLAUDE_HOME, "projects")
 TRASH = os.path.join(CLAUDE_HOME, ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+SORTS = ("newest", "oldest", "biggest", "smallest")    # the order `s` cycles through
 AGENTS = ("claude", "codex")    # tab order: the order adapters are registered in, above
 STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
@@ -81,7 +82,7 @@ HELP_LINES = [
     ("", "  space, r, x, E in the trash: pick, restore, purge, empty (only the filtered rows if a filter is on)"),
     ("", ""),
     ("H", "view"),
-    ("", "  s              sort: recency ↔ size"),
+    ("", "  s              sort: newest, oldest, biggest, smallest"),
     ("", "  .              show / hide again hidden chats"),
     ("", "  ●              running    ◉ picked"),
     ("", "  tab            next agent tab"),
@@ -766,13 +767,17 @@ def fit(s, width):
     return s if len(s) <= width else s[:max(0, width - 1)] + "…"
 
 def order(chats, mode, grouped):
-    """Recency keeps loader order; size sorts big-first (within each group when grouped)."""
-    if mode != "size": return chats
+    """Newest keeps loader order. Chats follow the mode, and when grouped the projects do too:
+    by their oldest chat, or by total size."""
+    if mode == "newest": return chats
+    k = (lambda c: c["mt"]) if mode == "oldest" else (lambda c: c["size"])
+    sign = -1 if mode == "biggest" else 1
     if grouped:
-        tot = {}
-        for c in chats: tot[c["proj"]] = tot.get(c["proj"], 0) + c["size"]
-        return sorted(chats, key=lambda c: (-tot[c["proj"]], c["proj"], -c["size"]))
-    return sorted(chats, key=lambda c: -c["size"])
+        per = {}
+        for c in chats: per.setdefault(c["proj"], []).append(k(c))
+        agg = {p: min(v) if mode == "oldest" else sum(v) for p, v in per.items()}
+        return sorted(chats, key=lambda c: (sign * agg[c["proj"]], c["proj"], sign * k(c)))
+    return sorted(chats, key=lambda c: sign * k(c))
 
 def group_of(items, i):
     """Index of the group header governing row i (nearest 'hdr' at or before i), or None."""
@@ -931,7 +936,7 @@ def run_ui(loader, title, grouped, home=None):
 
         chats = loader()
         by = {c["uuid"]: c for c in chats}
-        picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, None, "recency"
+        picked, cur, top, flt, filtering, msg, sort_mode = set(), 0, 0, "", False, None, SORTS[0]
         undo = []                                        # this session's deletes, one list of trash dirs each
         tn, tb = trash_stat()                            # cached; refreshed only on change
         folded = set()                                   # collapsed project groups
@@ -1162,7 +1167,7 @@ def run_ui(loader, title, grouped, home=None):
                 if j: add(0, x, "   ", DIM); x += 3
                 add(0, x, t, attr); x += len(t)
 
-            badge = ("  /" + flt if flt and not filtering else "") + ("  ▼ size" if sort_mode == "size" else "")
+            badge = ("  /" + flt if flt and not filtering else "") + (f"  {sort_mode} first" if sort_mode != "newest" else "")
             tab_spans = []                               # (x0, x1, tab) per drawn tab, for clicks
             if len(tabs) > 1:
                 x = 9 if trashing else 1 if all_tabs else 8
@@ -1440,7 +1445,7 @@ def run_ui(loader, title, grouped, home=None):
             elif ci and ch == ord("g"): cur = ci[0]
             elif ci and ch == ord("G"): cur = ci[-1]
             elif ch == ord("s"):
-                sort_mode = "size" if sort_mode == "recency" else "recency"
+                sort_mode = SORTS[(SORTS.index(sort_mode) + 1) % len(SORTS)]
                 cur = top = 0
             elif len(tabs) > 1 and ch in (9, curses.KEY_BTAB):   # tab / shift-tab: cycle
                 switch_tab(tabs[(tabs.index(tab) + (1 if ch == 9 else -1)) % len(tabs)])
@@ -1652,7 +1657,7 @@ def print_help():
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
                       ("select", "space pick   a toggle select-all   h hide"),
                       ("act", "enter open   p peek   d delete (to trash)   u undo   t trash browser"),
-                      ("view", "s sort   tab/shift-tab agent   P pin tab   . hidden   / filter   q quit")]:
+                      ("view", "s sort (newest/oldest/biggest/smallest)   tab/shift-tab agent   P pin tab   . hidden   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
     print()
     print(D("  ● running  ◉ picked"))
