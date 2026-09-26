@@ -6,10 +6,10 @@ A chat is its transcript, sidecar dir, job record and per-session state
 gone from /resume and the agents view.
 
 Usage:
-  reap                     interactive picker for the current project
+  reap                     picker across every project, cursor on the current folder's
+  reap .                   picker for the current folder's project only
   reap <name|path>         picker for a project (name = folder substring)
-  reap --all               picker across every project, grouped by workspace
-  reap ls [<name>|--all]   print a plain list (no UI, pipe-friendly)
+  reap ls [.|<name>]       print a plain list (no UI, pipe-friendly)
   reap rm <id>... [opts]   delete by uuid prefix (for scripts)   opts below
   reap trash [--empty]     list recoverable deletes (or purge them all)
   reap restore <id|name>   restore a chat from the trash
@@ -21,7 +21,7 @@ Usage:
                    --all      with --orphans: sweep every project
                    -p <name>  target another project (default: current dir)
 
-  With --all, /tmp scratchpad sessions are hidden. Pass --tmp to include them.
+  Across every project, /tmp scratchpad sessions are hidden. Pass --tmp to include them.
 
 Deletes go to a trash and stay recoverable for 7 days unless you pass --hard
 (pruned lazily at launch, no background process). Undo with `u` / `reap restore`.
@@ -55,6 +55,7 @@ NO_CODEX_CLI = False    # set from argv in main(): fall back to moving the file 
 RULE, BAR = "─", "▌"                        # UI glyphs (box-drawing over ASCII)
 LABEL_MAX, PROJ_MAX = 72, 46   # hard caps: a wide terminal must not turn labels into paragraphs
 LIST_W = 78                    # the list keeps a readable width; leftover space becomes a detail pane
+ALL_GONE = "--all is gone: plain reap shows every project"
 TAB_TIP = "P opens reap here every time"
 PANE_MIN = 42                  # ...but only when there's at least this much room for the pane
 
@@ -867,14 +868,14 @@ def term_light():
     r, g, b = (int(x, 16) * 255 // (16 ** len(x) - 1) for x in m.groups())
     return r * 299 + g * 587 + b * 114 >= 128000
 
-def run_ui(loader, title, grouped):
+def run_ui(loader, title, grouped, home=None):
     import curses, locale
     locale.setlocale(locale.LC_ALL, "")
     light = term_light() if sys.stdin.isatty() and sys.stdout.isatty() else None
 
     launch = []
 
-    def main(stdscr, loader=loader, grouped=grouped, trashing=False):
+    def main(stdscr, loader=loader, grouped=grouped, trashing=False, home=home):
         curses.curs_set(0)
         curses.use_default_colors()
         try:                                             # no mouse support is not an error
@@ -1111,6 +1112,9 @@ def run_ui(loader, title, grouped):
                 gone = [c for c in vis if c["kept"]]
                 if gone: items += [("label", "hidden")] + [("chat", c) for c in gone]
 
+            if home:                                     # first frame: land on the current folder's project
+                focus = next((it[1]["uuid"] for it in items if it[0] == "chat" and it[1]["dir"] == home), None)
+                home = None
             if focus:
                 at = [i for i, it in enumerate(items) if it[0] == "chat" and it[1]["uuid"] == focus]
                 if at: cur = at[0]
@@ -1618,10 +1622,10 @@ def print_help():
     print()
     print(HEAD("usage"))
     usage = [
-        ("reap", "interactive picker: current project"),
+        ("reap", "picker across all projects, cursor on the current folder's"),
+        ("reap .", "picker for the current folder's project only"),
         ("reap <name|path>", "picker for a project (name = folder substring)"),
-        ("reap --all", "picker across all projects, grouped by workspace"),
-        ("reap ls [<name>|--all]", "plain list (no UI, pipe-friendly)"),
+        ("reap ls [.|<name>]", "plain list (no UI, pipe-friendly)"),
         ("reap rm <id>... [opts]", "delete by uuid prefix (for scripts)"),
         ("reap trash [--empty]", "list recoverable deletes (or purge all)"),
         ("reap restore <id|name>", "restore a chat from the trash"),
@@ -1641,7 +1645,7 @@ def print_help():
                  ("-p <name>", "target another project (default: current dir)")]:
         print(f"    {CMD(a.ljust(11))}  {b}")
     print()
-    print(D("  with --all, /tmp scratchpad sessions are hidden. pass --tmp to include them."))
+    print(D("  across all projects, /tmp scratchpad sessions are hidden. pass --tmp to include them."))
     print()
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
@@ -1671,11 +1675,12 @@ def cmd_ls(args):
     tmp = pop_flag(args, "--tmp")
     subagents = pop_flag(args, "--subagents")
     kept_only = pop_flag(args, "--hidden")
-    if pop_flag(args, "--all"):
+    if pop_flag(args, "--all"): sys.exit(ALL_GONE)
+    proj = next((a for a in args if not a.startswith("-")), None)
+    if proj is None:
         chats = load_all(tmp, subagents); grouped = True
     else:
-        proj = next((a for a in args if not a.startswith("-")), None)
-        DIR = resolve_dir(proj)
+        DIR = resolve_dir(None if proj == "." else proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
         chats = load_chats(DIR, subagents); grouped = False
     chats = [c for c in chats if c["kept"]] if kept_only else [c for c in chats if not c["kept"]]
@@ -1798,19 +1803,22 @@ def main():
     st = pop_flag(rest, "--selftest")
     tmp = pop_flag(rest, "--tmp")                        # include /tmp scratchpad sessions
     subagents = pop_flag(rest, "--subagents")
-    if pop_flag(rest, "--all"):
+    if pop_flag(rest, "--all"): sys.exit(ALL_GONE)
+    proj = next((a for a in rest if not a.startswith("-")), None)
+    home = None
+    if proj is None:
         loader, title, grouped, where = ((lambda t=tmp, s=subagents: load_all(t, s)), "all projects", True,
                                          "all projects")
+        home = resolve_dir(None)
     else:
-        proj = next((a for a in rest if not a.startswith("-")), None)
-        DIR = resolve_dir(proj)
+        DIR = resolve_dir(None if proj == "." else proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
-        title = os.getcwd() if proj is None else pretty(DIR)
+        title = os.getcwd() if proj == "." else pretty(DIR)
         loader, grouped, where = (lambda d=DIR, s=subagents: load_chats(d, s)), False, title
 
     if st: selftest(loader(), where)
     elif not sys.stdout.isatty(): print_static(loader(), grouped)
-    else: run_ui(loader, title, grouped)
+    else: run_ui(loader, title, grouped, home)
 
 if __name__ == "__main__":
     main()
