@@ -335,7 +335,7 @@ def peek_turns(path, cap=250, text_only=False, src="claude"):
                         elif b.get("type") == "tool_use": parts.append(f"[tool: {b.get('name', '?')}]")
                         elif b.get("type") == "tool_result": parts.append("[tool result]")
                 text = " ".join(s for s in parts if s).strip()
-                if not text or text.startswith(("<local-command", "<command-", "Caveat:")): continue
+                if not text or text.startswith(("<local-command", "<command-", "<task-notification", "<system-reminder", "Caveat:")): continue
                 out.append(("you" if o["type"] == "user" else "claude", clean(" ".join(text.split()))))
                 if len(out) >= cap: break
     except OSError: pass
