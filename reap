@@ -1045,7 +1045,7 @@ def run_ui(loader, title, grouped, home=None):
             w0 = stdscr.getmaxyx()[1]
             for who, text in turns:
                 lines.append(("u" if who == "you" else "a", BAR + " " + who))
-                for ln in (textwrap.wrap(text, max(10, w0 - 6)) or [""]):
+                for ln in (textwrap.wrap(text.replace("**", ""), max(10, w0 - 6)) or [""]):
                     lines.append(("", "   " + ln))
                 lines.append(("", ""))
             if not lines: lines = [("", "(no readable messages)")]
@@ -1319,7 +1319,7 @@ def run_ui(loader, title, grouped, home=None):
                     if ty >= h - 3: break
                     add(ty, px, BAR + " " + who, OK if who == "you" else ACC | curses.A_BOLD)
                     ty += 1
-                    for ln in (textwrap.wrap(text, pw - 2) or [""])[:5]:
+                    for ln in (textwrap.wrap(text.replace("**", ""), pw - 2) or [""])[:5]:
                         if ty >= h - 3: break
                         add(ty, px + 2, ln, DIM); ty += 1
                     ty += 1
