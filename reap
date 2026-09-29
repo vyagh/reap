@@ -1075,6 +1075,11 @@ def run_ui(loader, title, grouped, home=None):
                 elif k == curses.KEY_PPAGE: off -= page
                 elif k == ord("g"): off = 0
                 elif k == ord("G"): off = len(lines)
+                elif k == curses.KEY_MOUSE:
+                    try: bstate = curses.getmouse()[4]
+                    except curses.error: continue
+                    if bstate & curses.BUTTON4_PRESSED: off -= 3
+                    elif bstate & getattr(curses, "BUTTON5_PRESSED", 0): off += 3
 
         def confirm_ask(prompt, hint, tattr=DANGER):
             h, w = stdscr.getmaxyx()
