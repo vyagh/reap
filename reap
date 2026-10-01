@@ -1848,10 +1848,11 @@ def cmd_rm(args):
         print((verb.upper() + " " if apply else f"would {verb} ") + what)
     if apply:
         st = load_state()
+        failed = 0
         for uuid, path, label, cwd in plan:
             if uuid in codex:
                 dest, err = trash_codex(uuid, label, NO_CODEX_CLI, codex[uuid]["proj"], cwd)
-                if err: print(f"!! {uuid[:8]}: {err}"); continue
+                if err: print(f"!! {uuid[:8]}: {err}"); failed += 1; continue
                 if hard: purge_entry({**read_json(os.path.join(dest, "reap-meta.json")), "_dir": dest}, NO_CODEX_CLI)
             elif path and hard: shutil.rmtree(path, ignore_errors=True)
             elif path: trash_move(os.path.basename(path), [path], label, os.path.dirname(path))
@@ -1859,7 +1860,9 @@ def cmd_rm(args):
             else: trash_chat(DIR, uuid, label, cwd)
             if uuid: st["keep"].pop(uuid, None)
         write_state(st)
-        print("done." if hard else f"done, in trash for {TRASH_DAYS}d (reap restore to undo)")
+        if failed < len(plan):
+            print((f"{failed} failed, the rest " if failed else "") + ("done." if hard else f"done, in trash for {TRASH_DAYS}d (reap restore to undo)"))
+        if failed: sys.exit(1)
     else:
         print(f"dry-run, add --apply to {verb}" + ("" if hard else " (--hard to skip trash)"))
 
