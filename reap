@@ -1598,7 +1598,7 @@ def run_ui(loader, title, grouped, home=None):
                 cur = top = 0
             elif ch == ord("/"): filtering = True; flt = ""
             elif ch == ord("a"):                         # toggle: all shown picked -> unpick them
-                sable = [c["uuid"] for c in vis if not c["live"]]
+                sable = [c["uuid"] for c in vis if not c["live"] and not (grouped and c["proj"] in folded)]
                 if sable and all(u in picked for u in sable):
                     for u in sable: picked.discard(u)
                 else:
