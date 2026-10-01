@@ -119,14 +119,18 @@ def dir_by_cwd(cwd):
                 break
     return None
 
-def resolve_dir(arg):
+def resolve_dir(arg, strict=True):
+    d = None
     if not arg:
         cwd = os.path.abspath(os.getcwd())
         d = os.path.join(PROJ, dirname_for(cwd))
-        return d if os.path.isdir(d) else dir_by_cwd(cwd) or d
-    if os.path.isdir(arg):
+        if not os.path.isdir(d): d = dir_by_cwd(cwd) or d
+    elif os.path.isdir(arg):
         ap = os.path.abspath(arg)
-        return ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, dirname_for(ap))
+        d = ap if os.path.dirname(ap) == PROJ else os.path.join(PROJ, dirname_for(ap))
+    if d:
+        if strict and os.path.isdir(d) and not under_proj(d): sys.exit(f"{d} points outside {PROJ}, refusing")
+        return d
     cands = sorted(d for d in glob.glob(os.path.join(PROJ, "*"))
                    if under_proj(d) and arg in os.path.basename(d))
     if len(cands) > 1:                                    # tie-break: prefer an exact leaf match
@@ -1800,7 +1804,7 @@ def cmd_rm(args):
     orphans = pop_flag(args, "--orphans")
     every = pop_flag(args, "--all")                      # with --orphans: sweep every project
     proj = pop_opt(args, "-p")
-    DIR = resolve_dir(proj)                              # None -> current project
+    DIR = resolve_dir(proj, not (orphans and every))     # None -> current project
     if not os.path.isdir(DIR) and not (orphans and every):
         if orphans or not any(c["dir"] == DIR for c in load_codex(load_state()["keep"])):
             sys.exit(f"no chats found for: {DIR}")
@@ -1916,7 +1920,7 @@ def main():
     if proj is None:
         loader, title, grouped, where = ((lambda full=False, t=tmp, s=subagents: load_all(t, s, full)), "all projects", True,
                                          "all projects")
-        home = resolve_dir(None)
+        home = resolve_dir(None, False)              # only places the cursor
     else:
         DIR = resolve_dir(None if proj == "." else proj)
         if not os.path.isdir(DIR): sys.exit(f"no chats found for: {DIR}")
