@@ -1687,9 +1687,12 @@ def run_ui(loader, title, grouped, home=None):
                 if confirm_delete(sel):
                     dests, fail = [], None
                     st = load_state()
+                    running = live_session_ids()          # a chat can start between the pick and now
                     for u in list(picked):
                         if u not in by: continue
                         c = by[u]
+                        if u in running or (c.get("src") == "codex" and codex_lock_live(u)):
+                            fail = f"{c['label'][:40]} is running now, left alone"; continue
                         if c.get("src") == "codex":
                             dest, err = trash_codex(c["uuid"], c["label"], NO_CODEX_CLI, c["proj"], c["cwd"])
                             if err: fail = err; continue
