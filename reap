@@ -15,12 +15,16 @@ Usage:
   reap trash [--empty]     list recoverable deletes (or purge them all)
   reap restore <id|name>   restore a chat from the trash
   reap --help              this help
+  reap --version           print version
+  reap --selftest          sanity check against your own ~/.claude
 
   reap rm options:  --apply  actually delete (default is a dry-run)
                    --hard   skip the trash, delete irreversibly
                    --orphans  remove leftover sidecar dirs (no transcript)
                    --all      with --orphans: sweep every project
                    -p <name>  target another project (default: current dir)
+  --no-codex-cli  (any command) move Codex files into reap's trash instead of calling codex
+  reap ls --hidden         list the hidden chats instead
 
   Across every project, /tmp scratchpad sessions are hidden. Pass --tmp to include them.
 
@@ -29,11 +33,11 @@ Deletes go to a trash and stay recoverable for 7 days unless you pass --hard
 
 Picker keys (press ? inside for this list):
   up/down, j/k move   PgUp/PgDn page   g/G top/bottom   [ ] prev/next workspace
-  space pick (skips live)   a toggle select-all
+  space pick (skips live)   a toggle select-all   h hide (never deletes)
   enter open the chat in its agent   p peek (read-only preview)
   d delete (to trash, asks to confirm)
   u undo last delete   t trash browser (pick, restore, purge, empty)
-  s sort newest/oldest/biggest/smallest   tab/shift-tab switch agent   P pin the tab reap opens on
+  s sort newest/oldest/biggest/smallest   . hidden chats   tab/shift-tab switch agent   P pin the tab reap opens on
   / filter (title/uuid/workspace)   ? keys   q quit
   mouse: click a tab, chat row or group line (folds it), wheel scrolls
 """
@@ -50,7 +54,7 @@ TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily 
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 SORTS = ("newest", "oldest", "biggest", "smallest")    # the order `s` cycles through
 SORT_MARK = {"newest": "date ↓", "oldest": "date ↑", "biggest": "size ↓", "smallest": "size ↑"}
-AGENTS = ("claude", "codex")    # tab order: the order adapters are registered in, above
+AGENTS = ("claude", "codex")    # tab order
 STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
 SKIP_PREFIXES = ("<", "#", "This session is being continued")   # Codex boilerplate first turns
@@ -184,7 +188,7 @@ def id_on_disk(cid):
     return False
 
 def write_state(state):
-    """Prune + write atomically. Only called for a keep/trash action or
+    """Prune + write atomically. Only called for a hide, pin or delete action or
     `rm --apply`, never on a read-only run."""
     keep = {k: v for k, v in state.get("keep", {}).items() if id_on_disk(k)}
     state = {"keep": keep, **({"pin": state["pin"]} if "pin" in state else {})}
@@ -265,10 +269,10 @@ WHOLE_MAX = 256 << 10                                    # at or under this a tr
 def meta(path, full=False):
     # Only title (custom-title/agent-name) and the first user prompt are needed,
     # and they live in the header. json.loads is the launch hotspot, so cheaply
-    # reject lines that can't carry either before parsing: title and prompt stay
-    # byte-identical to a full parse. Launch reads just the start (until a prompt
-    # and a cwd are in) and the last 64 KB (late titles), so n, the prompt count,
-    # is None. full reads the whole file and counts your prompts by substring, a
+    # reject lines that can't carry either before parsing. Launch reads just the start
+    # (until a prompt and a cwd are in) and the last 64 KB (late titles), so n, the
+    # prompt count, is None, and a title written only in the middle of a long
+    # transcript is missed until `ls` or --selftest reads it whole. full reads the whole file and counts your prompts by substring, a
     # user record that isn't a tool result or a meta line. Assistant records can't
     # be counted this way (one record per content block), so they're left out.
     title = prompt = cwd = None
@@ -439,8 +443,8 @@ def codex_rollout_glob(cid):
     return glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", f"*{cid}*.jsonl"))
 
 def codex_lock_live(cid):
-    """Positive proof only: a lock file whose flock or lockf probe fails EWOULDBLOCK.
-    Missing file or an unreadable one that isn't 'not found' stays protected."""
+    """Live when a flock or lockf probe on the lock file fails, or when the file exists
+    but can't be opened. A missing lock file means the writer exited."""
     p = os.path.join(CODEX_HOME, "thread-writer-locks", cid + ".lock")
     try: fd = os.open(p, os.O_RDWR)
     except FileNotFoundError: return False
@@ -766,7 +770,8 @@ def trash_chats():
     return out
 
 def prune_trash(days=TRASH_DAYS, no_cli=False):
-    """Lazy retention: drop entries older than `days`. Runs once at launch, no daemon, ~ms."""
+    """Lazy retention: drop entries older than `days`. Runs once at launch, no daemon. ~ms,
+    except one `codex delete` call per expired Codex entry."""
     if not os.path.isdir(TRASH): return
     cutoff = time.time() - days * 86400
     for d in glob.glob(os.path.join(TRASH, "*")):
@@ -1158,9 +1163,10 @@ def run_ui(loader, title, grouped, home=None):
             add(y0 + hh - 2, x0 + 3, "y", DANGER if purge else OK)
             other_src = sorted({c.get("src", "claude") for c in sel} - {"claude"})
             if purge:
-                hint = "gone for good · " + ("codex chats via codex delete · " if other_src else "") + "other key cancels"
+                hint = "gone for good · " + ("codex chats via codex delete · " if other_src and not NO_CODEX_CLI else "") + "other key cancels"
             elif other_src:
-                hint = f"move to trash · {', '.join(other_src)} chats via codex archive · undo for {TRASH_DAYS}d"
+                via = "moved to reap's trash" if NO_CODEX_CLI else "via codex archive"
+                hint = f"move to trash · {', '.join(other_src)} chats {via} · undo for {TRASH_DAYS}d"
             else:
                 hint = f"move to trash · undo for {TRASH_DAYS}d · other key cancels"
             add(y0 + hh - 2, x0 + 5, hint, DIM)
@@ -1759,10 +1765,11 @@ def print_help():
         print(f"    {CMD(a.ljust(11))}  {b}")
     print()
     print(D("  across all projects, /tmp scratchpad sessions are hidden. pass --tmp to include them."))
+    print(D("  reap ls --hidden lists the hidden chats. --no-codex-cli (any command) moves codex files into reap's trash instead of calling codex."))
     print()
     print(HEAD("picker keys") + D("   (press ? inside the picker for these)"))
     for cat, keys in [("move", "up/down or j/k   PgUp/PgDn   g/G   [ ] prev/next workspace"),
-                      ("select", "space pick   a toggle select-all   h hide"),
+                      ("select", "space pick   a toggle select-all (skips live)   h hide"),
                       ("act", "enter open   p peek   d delete (to trash)   u undo   t trash browser"),
                       ("view", "s sort (newest/oldest/biggest/smallest)   tab/shift-tab agent   P pin tab   . hidden   / filter   q quit")]:
         print(f"  {CMD(cat.ljust(7))}  {keys}")
