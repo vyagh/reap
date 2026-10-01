@@ -49,6 +49,7 @@ TRASH = os.path.join(CLAUDE_HOME, ".reap-trash")
 TRASH_DAYS = 7    # soft-deleted chats are recoverable this long; pruned lazily at launch
 CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
 SORTS = ("newest", "oldest", "biggest", "smallest")    # the order `s` cycles through
+SORT_MARK = {"newest": "date ↓", "oldest": "date ↑", "biggest": "size ↓", "smallest": "size ↑"}
 AGENTS = ("claude", "codex")    # tab order: the order adapters are registered in, above
 STATE_DIR = os.path.join(HOME, ".local", "state", "reap")
 STATE_PATH = os.path.join(STATE_DIR, "state.json")
@@ -74,23 +75,24 @@ HELP_LINES = [
     ("", "  p              peek: read-only preview"),
     ("", "  enter          open the chat under the cursor in its agent (quits reap)"),
     ("", "  d              delete selected → trash (confirms first)"),
-    ("", "  h              hide: out of the list until you ask, never deleted (on picked hidden chats: unhide)"),
+    ("", "  h              hide from the list, never deleted (on hidden chats: unhide)"),
     ("", ""),
     ("H", "trash · undo"),
     ("", "  u              undo the last delete"),
     ("", "  t              trash browser: restore / purge"),
-    ("", "  space, r, x, E in the trash: pick, restore, purge, empty (only the filtered rows if a filter is on)"),
+    ("", "  space r x E    in the trash: pick, restore, purge, empty"),
+    ("", "                 with a filter on, E empties only the rows shown"),
     ("", ""),
     ("H", "view"),
     ("", "  s              sort: newest, oldest, biggest, smallest"),
     ("", "  .              show / hide again hidden chats"),
-    ("", "  ●              running    ◉ picked"),
     ("", "  tab            next agent tab"),
     ("", "  shift-tab      previous agent tab"),
     ("", "  P              make this tab the one reap opens on (again: undo) · shown as *"),
     ("", "  /              filter title · uuid · workspace"),
     ("", "  q              quit"),
     ("", ""),
+    ("D", "●  running    ◉  picked    *  the tab reap opens on"),
     ("D", "delete moves the chat to a trash, recoverable for 7 days. hide only hides it."),
 ]
 
@@ -936,16 +938,20 @@ def run_ui(loader, title, grouped, home=None):
             DANGER = pair(7, 131) | curses.A_BOLD
             ACC = pair(8, 67)
             DIM = pair(9, 245)
+            LINE = pair(22, 245 if light is None else 247 if light else 240)   # chrome steps back behind the text
             # explicit fg AND bg, so the cursor row looks right whatever the theme
             SEL = pair(10, 231, 60) | curses.A_BOLD
-            tab_attr = (pair(11, 231, 67) or curses.A_REVERSE) | curses.A_BOLD
+            TAB_ON = (pair(11, 231, 67) or curses.A_REVERSE) | curses.A_BOLD
+            TRASH_ON = (pair(25, 231, 136) or curses.A_REVERSE) | curses.A_BOLD
             band = None if light is None else 254 if light else 236
             BANDT = pair(12, -1, band) if band else 0
             BANDD = pair(13, 245, band) if band else 0
-            tint = None if light is None else 189 if light else 18
+            BANDACC = pair(23, 67, band) | curses.A_BOLD if band else 0
+            BANDRULE = pair(24, 250)
+            tint = None if light is None else 189 if light else 60
             TINT = pair(14, -1, tint) if tint else 0
             TINTLIVE = pair(15, 71, tint) if tint else 0
-            TINTACC = pair(18, 67, tint) | curses.A_BOLD if tint else 0
+            TINTACC = pair(18, 67 if light else 153, tint) | curses.A_BOLD if tint else 0
             tray = None if light is None else 255 if light else 235
             TRAYD = pair(16, 245, tray) if tray else 0
             TRAYLIVE = pair(17, 71, tray) if tray else 0
@@ -958,9 +964,16 @@ def run_ui(loader, title, grouped, home=None):
             DANGER = pair(7, curses.COLOR_RED) | curses.A_BOLD
             ACC = pair(8, curses.COLOR_CYAN)
             DIM = curses.A_DIM
+            LINE = 0
+            BANDRULE = curses.A_DIM
             SEL = curses.A_REVERSE | curses.A_BOLD
-            tab_attr = pair(11, curses.COLOR_BLACK, curses.COLOR_CYAN) or curses.A_REVERSE
+            TAB_ON = (pair(11, curses.COLOR_BLACK, curses.COLOR_CYAN) or curses.A_REVERSE) | curses.A_BOLD
+            TRASH_ON = (pair(25, curses.COLOR_BLACK, curses.COLOR_YELLOW) or curses.A_REVERSE) | curses.A_BOLD
         WARN = YEL | curses.A_BOLD
+        TAB_OFF = BANDT if band else DIM                 # a label is a grey rectangle where fills exist
+        TAB_CNT = BANDD if band else DIM
+        TAB_PIN = BANDACC if band else ACC
+        LABEL = (BANDT if band else 0) | curses.A_BOLD
 
         keep_map = load_state()["keep"]                  # uuid -> epoch kept, refreshed on reload
         show_kept = False                                # resets to hidden on every launch
@@ -1017,25 +1030,54 @@ def run_ui(loader, title, grouped, home=None):
                 try: stdscr.addstr(y, x, ch, attr)
                 except curses.error: pass
 
-        def box(y0, x0, hh, ww, ttl="", tattr=curses.A_BOLD):
-            add(y0, x0, "┌" + RULE * (ww - 2) + "┐", DIM)
-            for yy in range(y0 + 1, y0 + hh - 1):
-                add(yy, x0, "│" + " " * (ww - 2), DIM); add(yy, x0 + ww - 1, "│", DIM)
-            add(y0 + hh - 1, x0, "└" + RULE * (ww - 2) + "┘", DIM)
+        def frame(y0, y1, x0, x1, ttl="", tattr=curses.A_BOLD, div=None, gaps=()):
+            h, w = stdscr.getmaxyx()
+            def put(y, x, ch):                           # add() clips the last column
+                try: stdscr.addstr(y, x, ch, LINE)
+                except curses.error: pass
+            top, bot = [RULE] * (x1 - x0 + 1), [RULE] * (x1 - x0 + 1)
+            top[0], top[-1], bot[0] = "╭", "╮", "╰"
+            if div is not None: top[div - x0], bot[div - x0] = "┬", "┴"
+            for a, b in gaps:                            # the edge opens under each label
+                top[a - x0 + 1:b - x0] = " " * (b - a - 1)
+                top[a - x0], top[b - x0] = "╯", "╰"
+            put(y0, x0, "".join(top))
+            for yy in range(y0 + 1, y1):
+                put(yy, x0, "│"); put(yy, x1, "│")
+                if div is not None: put(yy, div, "│")
+            put(y1, x0, "".join(bot[:-1]))
+            try:                                         # the last cell of the screen only takes insstr
+                (stdscr.insstr if (y1, x1) == (h - 1, w - 1) else stdscr.addstr)(y1, x1, "╯", LINE)
+            except curses.error: pass
             if ttl: add(y0, x0 + 2, f" {ttl} ", tattr)
 
-        def scrollbar(y0, page, off, n, col=None):
-            if n <= page or page < 2: return
-            for j in range(page): edge(y0 + j, "│", DIM, col)
-            edge(y0 + int((page - 1) * off / (n - page)), "┃", ACC | curses.A_BOLD, col)
+        def box(y0, x0, hh, ww, ttl="", tattr=curses.A_BOLD):
+            for yy in range(y0 + 1, y0 + hh - 1): add(yy, x0, " " * ww)
+            frame(y0, y0 + hh - 1, x0, x0 + ww - 1, ttl, tattr)
+
+        def progress(y, x, frac, cells):                 # how far down, as a bar and a percent on the edge
+            full = round(max(0.0, min(1.0, frac)) * cells)
+            add(y, x, " " + "█" * full, ACC); add(y, x + 1 + full, "░" * (cells - full), LINE)
+            add(y, x + 1 + cells, f" {round(frac * 100):02d}% ", DIM)
+
+        def hint_span(pairs):
+            return sum(len(k) + len(a) + 3 for k, a in pairs) - 2
+
+        def hints(y, x, pairs):                          # key bold, action dim, two spaces between
+            add(y, x - 1, " " * (hint_span(pairs) + 2))
+            for key, act in pairs:
+                add(y, x, key, curses.A_BOLD); x += len(key) + 1
+                add(y, x, act, DIM); x += len(act) + 2
+            return x
 
         def do_help():
+            stdscr.erase()
             h, w = stdscr.getmaxyx()
-            ww = min(74, w - 2); hh = min(len(HELP_LINES) + 4, h)
+            ww = min(max(len(ln) for _, ln in HELP_LINES) + 6, w - 2); hh = min(len(HELP_LINES) + 4, h)
             y0, x0 = max(0, (h - hh) // 2), max(0, (w - ww) // 2)
             box(y0, x0, hh, ww, "reap · keys")
             for j, (tag, s) in enumerate(HELP_LINES[:hh - 4]):
-                add(y0 + 2 + j, x0 + 3, s, ACC | curses.A_BOLD if tag == "H" else DIM if tag == "D" else 0)
+                add(y0 + 2 + j, x0 + 3, fit(s, ww - 6), ACC | curses.A_BOLD if tag == "H" else DIM if tag == "D" else 0)
             add(y0 + hh - 2, x0 + 3, "any key to close", DIM)
             stdscr.refresh(); stdscr.getch()
 
@@ -1045,7 +1087,7 @@ def run_ui(loader, title, grouped, home=None):
             w0 = stdscr.getmaxyx()[1]
             for who, text in turns:
                 lines.append(("u" if who == "you" else "a", BAR + " " + who))
-                for ln in (textwrap.wrap(text.replace("**", ""), max(10, w0 - 6)) or [""]):
+                for ln in (textwrap.wrap(text.replace("**", ""), max(10, w0 - 8)) or [""]):
                     lines.append(("", "   " + ln))
                 lines.append(("", ""))
             if not lines: lines = [("", "(no readable messages)")]
@@ -1053,19 +1095,16 @@ def run_ui(loader, title, grouped, home=None):
             while True:
                 stdscr.erase()
                 h, w = stdscr.getmaxyx()
-                page = max(1, h - 4)
+                page = max(1, h - 2)
                 off = max(0, min(off, max(0, len(lines) - page)))
-                pct = 100 if len(lines) <= page else int(100 * (off + page) / len(lines))
-                add(0, 1, "peek", curses.A_BOLD)
-                add(0, 6, fit(c["label"], w - 28), ACC | curses.A_BOLD)
-                pos = f"{len(turns)} turns · {pct}%"
-                add(0, max(1, w - len(pos) - 2), pos, DIM)
-                add(1, 0, RULE * (w - 1), DIM)
                 for j, (tag, s) in enumerate(lines[off:off + page]):
-                    add(2 + j, 1, s, OK if tag == "u" else ACC | curses.A_BOLD if tag == "a" else 0)
-                scrollbar(2, page, off, len(lines))
-                add(h - 2, 0, RULE * (w - 1), DIM)
-                add(h - 1, 1, "↑/↓ scroll · g/G ends · q back", DIM)
+                    add(1 + j, 2, s, OK if tag == "u" else ACC | curses.A_BOLD if tag == "a" else 0)
+                frame(0, h - 1, 0, w - 1, fit(c["label"], w - 8))
+                hints(h - 1, 3, [("↑/↓", "scroll"), ("g/G", "ends")])
+                hints(h - 1, w - 3 - hint_span([("q", "back")]), [("q", "back")])
+                cells = min(28, w - 50)
+                if len(lines) > page and cells >= 6:
+                    progress(h - 1, w - 12 - hint_span([("q", "back")]) - cells, off / (len(lines) - page), cells)
                 stdscr.refresh()
                 k = stdscr.getch()
                 if k in (ord("q"), 27, ord("p")): return
@@ -1173,100 +1212,109 @@ def run_ui(loader, title, grouped, home=None):
                 later = [i for i in ci if i >= cur]
                 cur = later[0] if later else ci[-1]
 
-            top, pin, body = plan_view(items, cur, top, max(1, h - 4), grouped)
+            top, pin, body = plan_view(items, cur, top, max(1, h - 3), grouped)
 
             total = sum(c["size"] for c in tab_chats)
             psz = sum(by[u]["size"] for u in picked if u in by)
             # split the terminal: a readable list on the left, a detail pane on the right when wide
             pane = w >= LIST_W + PANE_MIN
             cw = LIST_W if pane else w - 1               # list content width
-            px = cw + 3                                  # detail-pane left column
-            rw = w - 1                                   # rules span the whole frame
-            all_tabs = grouped and len(tabs) > 1         # the tab bar takes the badge's place
-            if trashing: add(0, 1, " trash ", SEL)
-            elif not all_tabs: add(0, 1, " reap ", SEL)
+            px = cw + 2                                  # detail-pane left column
             kept_count = sum(1 for c in tab_chats if c["kept"])
             filtered = flt and not filtering
-            right = []
-            if picked: right.append((f"{len(picked)} picked · {human(psz)}", ACC))
-            if trashing:
-                right += [(plural(len(tab_chats)), DIM), (human(total), DIM)]
-            elif filtered:
-                shown_n = sum(1 for c in tab_chats if show_kept or not c["kept"])
-                right.append((f"{len(vis)} of {plural(shown_n)}", DIM))
-            else:
-                if kept_count: right.append((f"{kept_count} hidden", DIM))
-                if tn: right.append((f"trash {human(tb)}", YEL))
-            if len(tabs) > 1 and not trashing: right.append((title if not grouped else human(total), DIM))
-            rtxt = "   ".join(t for t, _ in right)
-            x_right = max(8, cw - len(rtxt))
-            x = x_right
-            for j, (t, attr) in enumerate(right):
-                if j: add(0, x, "   ", DIM); x += 3
-                add(0, x, t, attr); x += len(t)
-
-            badge = ("  /" + flt if flt and not filtering else "") + (f"  {sort_mode} first" if sort_mode != "newest" else "")
             tab_spans = []                               # (x0, x1, tab) per drawn tab, for clicks
-            if len(tabs) > 1:
-                x = 9 if trashing else 1 if all_tabs else 8
-                for a in tabs:
-                    n = len(chats) if a == "all" else agent_counts.get(a, 0)
-                    ttxt = f" {'*' if a == pinned else ''}{a} {n} "
-                    add(0, x, ttxt, tab_attr if a == tab else DIM)
-                    if a == pinned: add(0, x + 1, "*", (tab_attr | curses.A_BOLD) if a == tab else ACC)
-                    tab_spans.append((x, x + len(ttxt), a)); x += len(ttxt) + 1
-                if badge: add(0, x, badge, ACC | curses.A_BOLD); x += len(badge)
-                if tip and not pinned and x + 2 + len(TAB_TIP) < x_right:
-                    add(0, x + 2, TAB_TIP, DIM)
-            elif not trashing:
-                avail = max(0, x_right - 3 - 8)
-                total_txt = f" · {human(total)}"
-                scope = projlabel(title, max(8, avail - len(total_txt) - len(badge)))
-                left = scope + total_txt
-                if len(left) + len(badge) > avail:
-                    left = projlabel(title, max(8, avail - len(badge)))
-                add(0, 8, left, DIM)
-                if badge: add(0, 8 + len(left), badge, ACC | curses.A_BOLD)
-            add(1, 0, RULE * rw, DIM)
+
+            def tab_txt(a, bare=False):
+                n = len(chats) if a == "all" else agent_counts.get(a, 0)
+                return f" {'*' if a == pinned else ''}{a} " + ("" if bare else f"{n} ")
+
+            def draw_labels():                           # row 0, above the frame: tabs left, the list's state right
+                opens = []                               # (first, last) column of each label the top edge opens under
+                state = []                               # (text, attr, drop order when the row is short; None stays)
+                if picked: state.append((f"{len(picked)} picked · {human(psz)}", ACC, None))
+                if filtered:
+                    shown_n = sum(1 for c in tab_chats if show_kept or not c["kept"])
+                    state.append((f"{len(vis)} of {plural(shown_n)}", DIM, 1))
+                elif kept_count and not grouped and not trashing: state.append((f"{kept_count} hidden", DIM, 1))
+                state.append((SORT_MARK[sort_mode], ACC, None))
+                if trashing: state.append((f"{plural(len(tab_chats))} · {human(total)}", DIM, 0))
+                else:
+                    if tn: state.append((f"trash {human(tb)}", YEL, None))
+                    state.append((f"total {human(total)}", 0, 0))
+                x = 2
+                if trashing: add(0, x, " trash ", TRASH_ON); x += 8
+                bare = False                             # tabs other than the current one lose their count
+                name = ""
+                if len(tabs) > 1:
+                    def tabs_w(): return sum(len(tab_txt(a, bare and a != tab)) + 1 for a in tabs)
+                    while x + tabs_w() + (len(flt) + 4 if filtered else 0) + 1 + sum(len(t) + 3 for t, _, _ in state) > cw:
+                        loose = [r for r in state if r[2] is not None]
+                        if loose: state.remove(min(loose, key=lambda r: r[2]))
+                        elif not bare: bare = True
+                        elif state: state.pop(0)
+                        else: break
+                    for a in tabs:
+                        ttxt = tab_txt(a, bare and a != tab)
+                        add(0, x, ttxt, TAB_ON if a == tab else TAB_OFF)
+                        if a != tab:
+                            k = ttxt.find(" ", 1)
+                            add(0, x + k, ttxt[k:], TAB_CNT)
+                        if a == pinned: add(0, x + 1, "*", TAB_ON if a == tab else TAB_PIN)
+                        tab_spans.append((x, x + len(ttxt), a))
+                        if a == tab: opens.append((x, x + len(ttxt) - 1))
+                        x += len(ttxt) + 1
+                elif not trashing:
+                    while len(state) > 1 and x + 12 + sum(len(t) + 3 for t, _, _ in state) > cw:
+                        loose = [r for r in state if r[2] is not None]
+                        state.remove(min(loose, key=lambda r: r[2]) if loose else state[0])
+                    name = f" {projlabel(title, max(8, cw - x - len(flt) - 6 - sum(len(t) + 3 for t, _, _ in state)))} "
+                    add(0, x, name, LABEL); opens.append((x, x + len(name) - 1)); x += len(name) + 1
+                if filtered:
+                    add(0, x, f" /{flt} ", ACC | curses.A_BOLD); x += len(flt) + 4
+                sx = cw - 1 - sum(len(t) + 3 for t, _, _ in state) + 3
+                if len(tabs) > 1 and not grouped and not trashing and sx - x > 12:   # one folder: say which
+                    name = f" {projlabel(title, sx - x - 4)} "
+                    add(0, x, name, DIM); x += len(name)
+                sx = cw - 1 - sum(len(t) + 3 for t, _, _ in state) + 3
+                if tip and not pinned and x + len(TAB_TIP) < sx - 2:
+                    add(0, x, TAB_TIP, DIM)
+                for t, attr, _ in state:
+                    add(0, sx, t, attr)
+                    if t.startswith(("trash ", "total ")): add(0, sx, t[:5], DIM)    # the word steps back, the number reads
+                    sx += len(t) + 3
+                return opens
 
             def draw_hdr(y, it, sel=False):
                 shut = it[1] in folded
                 leaf, _ = split_path(it[3] if len(it) > 3 else None,
                                      projlabel(it[1], PROJ_MAX))
                 info = f"{plural(it[2][0])} · {human(it[2][1])}"
-                if sel and not band:                     # cursor is parked on a folded group
-                    add(y, 0, f" ▸ {leaf}  {info}".ljust(cw), SEL)
-                    return
-                add(y, 1, "▸" if shut else BAR, ACC | curses.A_BOLD)
                 if band:
-                    bt, bd = (TINT, TINT) if sel else (BANDT, BANDD)
-                    add(y, 2, " " * (cw - 2), bt)
-                    add(y, 3, leaf, bt | curses.A_BOLD)
-                    if shut:
-                        add(y, 3 + len(leaf) + 2, info, bd)
-                        return
-                    n = hidden.get(it[1], 0)
-                    sz = human(it[2][1])
-                    tail = f" · {sz}" if n else sz
-                    add(y, cw - len(tail) - 1, tail, bd)
-                    if n: add(y, cw - len(tail) - len(f"{n} hidden") - 1, f"{n} hidden", bt)
-                    return
-                add(y, 3, leaf, curses.A_BOLD)
+                    fill, mk, nm, inf = (TINT, TINTACC, TINT, TINT) if sel else (BANDT, BANDACC, BANDT, BANDD)
+                elif sel:                                # cursor is parked on a folded group
+                    fill = mk = nm = inf = SEL
+                else:
+                    fill, mk, nm, inf = 0, ACC | curses.A_BOLD, 0, DIM
+                if fill: add(y, 2, " " * (cw - 3), fill)
+                add(y, 2, "▸" if shut else BAR, mk)
+                add(y, 4, leaf, nm | curses.A_BOLD)
                 if shut:
-                    add(y, 3 + len(leaf) + 2, info, DIM)
+                    add(y, 4 + len(leaf) + 2, info, inf)
                     return
-                sz = human(it[2][1])
                 n = hidden.get(it[1], 0)
-                tail = f" · {sz}" if n else sz
-                txt = f"{n} hidden{tail}" if n else sz
-                add(y, cw - len(tail), tail, DIM)
-                if n: add(y, cw - len(txt), f"{n} hidden", 0)
-                rule = cw - len(txt) - 2 - (3 + len(leaf) + 2)
-                if rule > 0: add(y, 3 + len(leaf) + 2, RULE * rule, DIM)
+                sz = human(it[2][1])
+                txt = f"{n} hidden · {sz}" if n else sz
+                x = cw - 2 - len(txt)
+                add(y, x, txt, inf)
+                if n: add(y, x, f"{n} hidden", nm)
+                if not band:
+                    rule = x - 2 - (4 + len(leaf) + 2)
+                    if rule > 0: add(y, 4 + len(leaf) + 2, RULE * rule, BANDRULE)
 
             def draw_detail(it):
-                pw = w - px - 1
-                if pw < 20: return
+                pw = w - px - 2
+                lw = min(pw - 2, 28)                      # the label above the pane stays short
+                if pw < 20: return None
                 def kv(yy, k, v, vattr=0):
                     add(yy, px, k, DIM)
                     lines = textwrap.wrap(str(v), max(4, pw - 11)) or [""]
@@ -1274,17 +1322,17 @@ def run_ui(loader, title, grouped, home=None):
                     return yy + len(lines)
                 if it[0] == "hdr":                        # cursor parked on a folded group
                     leaf, parent = split_path(it[3] if len(it) > 3 else None, it[1])
-                    add(2, px, fit(leaf, pw), ACC | curses.A_BOLD)
-                    yy = kv(4, "path", (parent + "/" + leaf) if parent else leaf)
+                    yy = kv(2, "path", (parent + "/" + leaf) if parent else leaf)
                     yy = kv(yy, "chats", str(it[2][0]))
                     yy = kv(yy, "size", human(it[2][1]))
-                    add(yy + 1, px, "folded · z to open", DIM); return
+                    add(yy + 1, px, "folded · z to open", DIM)
+                    return fit(leaf, lw), curses.A_BOLD
                 c = it[1]
-                add(2, px, fit(c["label"] if c["titled"] else "untitled", pw),
-                    curses.A_BOLD if c["titled"] else DIM)
+                head = (fit(c["label"] if c["titled"] else "untitled", lw),
+                        curses.A_BOLD if c["titled"] else DIM)
                 leaf, parent = split_path(c["cwd"], "")
                 full = (parent + "/" + leaf) if parent else leaf
-                if full: add(3, px, fit(full, pw), DIM)
+                if full: add(2, px, fit(full, pw), DIM)
                 state = None
                 if c["kept"]:
                     kd = time.strftime("%b %d", time.localtime(keep_map.get(c["uuid"], 0)))
@@ -1294,40 +1342,40 @@ def run_ui(loader, title, grouped, home=None):
                 elif trashing:
                     state = (f"deleted {time.strftime('%b %d', time.localtime(c['mt']))}", DIM)
                 src = c.get("src", "claude")
-                add(4, px, src, DIM)
+                add(3, px, src, DIM)
                 if state:
                     txt, attr = state
-                    add(4, px + len(src), " · ", DIM)
-                    add(4, px + len(src) + 3, fit(txt, max(0, pw - len(src) - 3)), attr)
+                    add(3, px + len(src), " · ", DIM)
+                    add(3, px + len(src) + 3, fit(txt, max(0, pw - len(src) - 3)), attr)
                 if trashing:
                     lx = px + len(src) + 3 + len(state[0])
-                    add(4, lx, " · ", DIM)
-                    add(4, lx + 3, f"{c['_left']}d left", YEL if c["_left"] <= 1 else DIM)
+                    add(3, lx, " · ", DIM)
+                    add(3, lx + 3, f"{c['_left']}d left", YEL if c["_left"] <= 1 else DIM)
                 if trashing and c["msgs"] is None and src == "codex":   # once per entry
                     c["msgs"] = codex_scan(c["path"])[1]
                 when = time.strftime("%b %d, %H:%M", time.localtime(c["mt"]))
                 bits = " · ".join([human(c["size"])] + ([plural(c["msgs"], "prompt")] if c["msgs"] is not None else [])
                                   + ([] if trashing else [when]))
-                add(5, px, fit(bits, pw), DIM)
-                add(6, px, RULE * pw, DIM)
+                add(4, px, fit(bits, pw), DIM)
                 turns = pcache.get(c["uuid"])            # lazy + cached: smooth to hold j
                 if turns is None:
                     turns = pcache[c["uuid"]] = peek_turns(c["path"], cap=16, text_only=True, src=c.get("src", "claude"))
-                ty = 8
+                ty = 6
                 if not turns: add(ty, px, "(no readable messages)", DIM)
                 for who, text in turns:
-                    if ty >= h - 3: break
+                    if ty >= h - 2: break                # room for the name and a line under it
                     add(ty, px, BAR + " " + who, OK if who == "you" else ACC | curses.A_BOLD)
                     ty += 1
                     for ln in (textwrap.wrap(text.replace("**", ""), pw - 2) or [""])[:5]:
-                        if ty >= h - 3: break
+                        if ty >= h - 1: break
                         add(ty, px + 2, ln, DIM); ty += 1
                     ty += 1
+                return head
 
             if not vis:
-                if trashing: add(3, 3, "trash is empty, nothing deleted in the last 7 days", DIM)
-                else: add(2, 1, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
-            base = 2
+                if trashing: add(2, 2, "trash is empty, nothing deleted in the last 7 days", DIM)
+                else: add(2, 2, "no chats" + (f" matching /{flt}" if flt else ""), DIM)
+            base = 2                                     # a row of air under the tabs
             row_at = {}                                  # screen row -> item index, for clicks
             if pin is not None:
                 draw_hdr(base, items[pin]); row_at[base] = pin; base += 1
@@ -1341,22 +1389,22 @@ def run_ui(loader, title, grouped, home=None):
                 if it[0] == "hdr":
                     draw_hdr(y, it, sel=(idx == cur)); continue
                 if it[0] == "label":
-                    lx = 3 if grouped else 1
-                    tx = lx + 14                             # title column, after mark + rel + size
-                    add(y, lx, (RULE * (tx - lx - 1) + f" {it[1]} ").ljust(cw - lx, RULE), DIM)
+                    lx = 4 if grouped else 2
+                    tx = 17 if grouped else 16               # title column, after mark + rel + size
+                    add(y, lx, (RULE * (tx - lx - 1) + f" {it[1]} ").ljust(cw - 2 - lx, RULE), LINE or DIM)
                     continue
                 c = it[1]
                 on = c["uuid"] in picked
                 if c["live"]: mark, mattr = "●", LIVE
                 elif on: mark, mattr = "◉", ACC | curses.A_BOLD
                 else: mark, mattr = "·", DIM
-                ind = "  " if grouped else ""
+                ind = " " if grouped else ""
                 tail = f"{c['_left']}d left" if trashing else ""
-                tail_x = cw - len(tail) - 1              # the tail ends at the band's right edge
-                lend = tail_x - 2 if tail else cw        # titles stop two columns before it
+                tail_x = cw - 2 - len(tail)              # the tail ends at the band's right edge
+                lend = tail_x - 2 if tail else cw - 2    # titles stop two columns before it
                 if idx == cur and band:
-                    x = 1 + len(ind)
-                    add(y, x, " " * (cw - x), TINT)
+                    x = 2 + len(ind)
+                    add(y, 2, " " * (cw - 3), TINT)
                     add(y, x, mark, TINTLIVE if c["live"] else TINTACC if on else TINT); x += 1
                     seg = f" {c['rel']:>3} {human(c['size']):>6}  "
                     add(y, x, seg, TINT); x += len(seg)
@@ -1365,15 +1413,15 @@ def run_ui(loader, title, grouped, home=None):
                     if tail: add(y, tail_x, tail, TINT)
                     continue
                 if idx == cur:
-                    pre = f" {ind}{mark} {c['rel']:>3} {human(c['size']):>6}  "
-                    lbl = fit(c["label"], max(0, min(LABEL_MAX, lend - len(pre))))
-                    add(y, 0, (pre + lbl).ljust(cw), SEL)
+                    pre = f"{ind}{mark} {c['rel']:>3} {human(c['size']):>6}  "
+                    lbl = fit(c["label"], max(0, min(LABEL_MAX, lend - 2 - len(pre))))
+                    add(y, 2, (pre + lbl).ljust(cw - 3), SEL)
                     if tail: add(y, tail_x, tail, SEL)
                     continue
-                add(y, 0, " " + ind); x = 1 + len(ind)
+                x = 2 + len(ind)
                 dim = DIM
                 if tray and c["kept"]:
-                    add(y, x, " " * (cw - x), TRAYD)
+                    add(y, 2, " " * (cw - 3), TRAYD)
                     dim = TRAYD
                     mattr = TRAYLIVE if c["live"] else TRAYACC if on else TRAYD
                 add(y, x, mark, mattr); x += 1
@@ -1391,36 +1439,40 @@ def run_ui(loader, title, grouped, home=None):
                 else:
                     add(y, x, lbl, tattr)
                 if tail: add(y, tail_x, tail, YEL if c["_left"] <= 1 else dim)
-            if pane:                                     # divider (doubles as scroll track) + detail
-                for j in range(body): add(2 + j, cw + 1, "│", DIM)
-                if 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
-                    draw_detail(items[cur])
-            scrollbar(base, body, top, len(items), cw + 1 if pane else cw)
+            head = None
+            if pane and 0 <= cur < len(items) and items[cur][0] in ("chat", "hdr"):
+                head = draw_detail(items[cur])
+            opens = draw_labels()
+            frame(1, h - 1, 0, w - 1, div=cw if pane else None, gaps=opens)
+            if head: add(1, px, f" {head[0]} ", head[1])
 
-            add(h - 2, 0, RULE * rw, DIM)
+            ends = [("?", "keys"), ("q", "back" if trashing else "quit")]
+            ky = h - 1                                   # keys, messages and the filter ride the bottom edge
             if filtering:
-                add(h - 1, 1, "/", ACC | curses.A_BOLD)
-                add(h - 1, 2, flt, curses.A_BOLD)
-                add(h - 1, 2 + len(flt), "▏", DIM)
                 mtxt = f"{len(vis)} match{'es' if len(vis) != 1 else ''} · enter apply · esc clear"
-                add(h - 1, max(1, w - len(mtxt) - 1), mtxt, DIM)
+                add(ky, 2, f" /{flt}  ", curses.A_BOLD)
+                add(ky, 3, "/", ACC | curses.A_BOLD)
+                add(ky, 4 + len(flt), "▏", DIM)
+                add(ky, w - 4 - len(mtxt), f" {mtxt} ", DIM)
             elif msg:
-                add(h - 1, 1, msg[1], OK if msg[0] == "ok" else WARN)
+                add(ky, 2, f" {fit(msg[1], w - 8)} ", OK if msg[0] == "ok" else WARN)
             else:
-                x = 1
-                hints = [("?", "keys")] + ([] if trashing else [("enter", "open")])
-                if len(tabs) > 1: hints += [("tab", "agents")]
                 if trashing:
-                    if vis: hints += [("space", "pick"), ("r", "restore"), ("x", "purge"), ("E", "empty"), ("p", "peek")]
-                    hints += [("/", "filter"), ("q", "back")]
-                else:
-                    hints += [("s", "sort"), ("space", "pick"), ("p", "peek"), ("d", "delete")]
-                    if undo: hints.append(("u", "undo"))
-                    hints += [("h", "hide"), (".", "hide again" if show_kept else "show hidden"),
-                              ("t", "trash"), ("/", "filter"), ("q", "quit")]
-                for key, act in hints:
-                    add(h - 1, x, key, curses.A_BOLD); x += len(key) + 1
-                    add(h - 1, x, act, DIM); x += len(act) + 3
+                    groups = [[("space", "pick"), ("r", "restore"), ("x", "purge"), ("E", "empty")] if vis else [],
+                              [("p", "peek")] if vis else [], [("/", "filter")]]
+                else:                                    # look, act, find
+                    groups = [[("enter", "open"), ("p", "peek")],
+                              [("space", "pick"), ("d", "delete")] + ([("u", "undo")] if undo else []) + [("h", "hide")],
+                              [("/", "filter"), ("s", "sort"), ("t", "trash")]]
+                room = w - 9 - hint_span(ends)
+                for shed in (None, "s", "h", "p", "space", "u", "/", "t", "E", "x", "r", "d"):   # a narrow edge sheds these in turn; ? lists them all
+                    groups = [g for g in ([hk for hk in g if hk[0] != shed] for g in groups) if g]
+                    if sum(hint_span(g) + 3 for g in groups) - 3 <= room: break
+                x = 3
+                for gi, g in enumerate(groups):
+                    if gi: add(ky, x - 2, " · ", LINE); x += 1
+                    x = hints(ky, x, g)
+                hints(ky, w - 3 - hint_span(ends), ends)
             stdscr.refresh()
 
             at = items[cur][1] if 0 <= cur < len(items) and items[cur][0] == "chat" else None
