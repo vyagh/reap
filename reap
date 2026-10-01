@@ -44,7 +44,7 @@ Picker keys (press ? inside for this list):
 import fcntl, json, os, re, signal, subprocess, sys, glob, time, shutil, textwrap, tempfile
 from collections import Counter
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 HOME = os.path.expanduser("~")
 CLAUDE_HOME = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
