@@ -676,7 +676,9 @@ def restore_codex(meta, d, no_cli):
 
 def purge_entry(m, no_cli):
     """Purge (trash 'x', 'E', the 7-day prune): permanent, so the entry always drops."""
-    if m.get("src") == "codex" and not m.get("moved") and not no_cli:
+    arch = m.get("archived")                             # gone from the archive and back under sessions/: unarchived by hand
+    back = arch and not os.path.exists(arch) and codex_rollout_glob(m.get("uuid", ""))
+    if m.get("src") == "codex" and not m.get("moved") and not no_cli and not back:
         run_codex(["delete", m.get("uuid", ""), "--force"])
     shutil.rmtree(m["_dir"], ignore_errors=True)
     if m.get("src") != "codex": drop_bare_proj(m.get("dir"))
