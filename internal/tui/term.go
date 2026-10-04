@@ -167,6 +167,10 @@ func keyName(ev *tcell.EventKey) string {
 	return ""
 }
 
+// mouseReported are the presses Python's curses asks for: the left button
+// and the wheel. Releases and the other buttons never reach reap (reap:932).
+const mouseReported = tcell.ButtonPrimary | tcell.WheelUp | tcell.WheelDown
+
 // wait returns the next key, mouse or resize event, or nil once d has passed
 // or the screen is gone. A d of 0 waits as long as it takes.
 func (u *ui) wait(d time.Duration) tcell.Event {
@@ -181,9 +185,13 @@ func (u *ui) wait(d time.Duration) tcell.Event {
 				u.quit = true
 				return nil
 			}
-			switch ev.(type) {
-			case *tcell.EventKey, *tcell.EventMouse, *tcell.EventResize:
+			switch ev := ev.(type) {
+			case *tcell.EventKey, *tcell.EventResize:
 				return ev
+			case *tcell.EventMouse:
+				if ev.Buttons()&mouseReported != 0 {
+					return ev
+				}
 			}
 		case <-timeout:
 			return nil
