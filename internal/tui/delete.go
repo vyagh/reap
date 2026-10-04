@@ -170,7 +170,11 @@ func (u *ui) confirmDelete(sel []*chat.Chat) bool {
 	}
 	hint := fmt.Sprintf("move to trash · undo for %dd · other key cancels", chat.TrashDays)
 	if len(others) > 0 {
-		hint = fmt.Sprintf("move to trash · %s chats via codex archive · undo for %dd", strings.Join(others, ", "), chat.TrashDays)
+		via := "via codex archive"
+		if u.start.NoCodexCLI {
+			via = "moved to reap's trash"
+		}
+		hint = fmt.Sprintf("move to trash · %s chats %s · undo for %dd", strings.Join(others, ", "), via, chat.TrashDays)
 	}
 	u.add(y0+hh-2, x0+3, "y", u.pal.ok)
 	u.add(y0+hh-2, x0+5, hint, u.pal.dim)

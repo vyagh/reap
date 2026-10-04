@@ -80,7 +80,7 @@ func cmdLs(env Env, agents chat.Agents, args []string) int {
 
 // cmdDefault is plain reap: the full-screen view on a terminal, the plain
 // list when piped, and the self-check with --selftest.
-func cmdDefault(env Env, agents chat.Agents, args []string) int {
+func cmdDefault(env Env, agents chat.Agents, noCLI bool, args []string) int {
 	selftestRun := popFlag(&args, "--selftest")
 	tmp := popFlag(&args, "--tmp")
 	subagents := popFlag(&args, "--subagents")
@@ -125,16 +125,16 @@ func cmdDefault(env Env, agents chat.Agents, args []string) int {
 		printStatic(env, chats, grouped)
 		return 0
 	}
-	return openScreen(env, agents, load, title, grouped)
+	return openScreen(env, agents, noCLI, load, title, grouped)
 }
 
 // openScreen starts the full-screen view. With every project shown it also
 // tells the view which project folder the cursor starts on.
-func openScreen(env Env, agents chat.Agents, load func(bool) ([]chat.Chat, error), title string, grouped bool) int {
+func openScreen(env Env, agents chat.Agents, noCLI bool, load func(bool) ([]chat.Chat, error), title string, grouped bool) int {
 	if env.Screen == nil {
 		return die(env, "reap: no full-screen view in this build, pipe the output or use reap ls")
 	}
-	start := Start{Agents: agents, Homes: env.Homes, Stdin: env.Stdin, Stdout: env.Stdout, Load: load, Title: title, Grouped: grouped}
+	start := Start{Agents: agents, Homes: env.Homes, Stdin: env.Stdin, Stdout: env.Stdout, Load: load, Title: title, Grouped: grouped, CwdOf: env.CwdOf, NoCodexCLI: noCLI}
 	if grouped {
 		home, err := chat.ResolveDir(env.Homes, "", false, env.CwdOf)
 		if err != nil {

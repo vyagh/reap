@@ -47,6 +47,10 @@ type Start struct {
 	Load    func(full bool) ([]chat.Chat, error)
 	Title   string
 	Grouped bool
+	// CwdOf reads the working folder out of one Claude transcript.
+	CwdOf func(transcript string) string
+	// NoCodexCLI is the --no-codex-cli flag: a Codex purge does not call codex.
+	NoCodexCLI bool
 	// Home is the project folder the cursor starts on. It is only set when
 	// the view shows every project.
 	Home string
@@ -78,7 +82,7 @@ func Run(args []string, env Env) int {
 			return cmdRestore(env, agents, args[1:])
 		}
 	}
-	return cmdDefault(env, agents, args)
+	return cmdDefault(env, agents, noCLI, args)
 }
 
 // die prints msg to stderr and returns 1, where Python calls sys.exit with a string.

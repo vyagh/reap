@@ -113,9 +113,10 @@ type ui struct {
 	restored  []chat.Chat     // trash chats put back, in order
 	tip       bool            // show the pin tip until the next key that is not a tab switch
 
-	trashCount int            // trash entries, for the "trash" label
-	trashSize  int64          // bytes they hold
-	left       map[string]int // trash view: days left per chat id, for the "Nd left" column
+	trashCount int                   // trash entries, for the "trash" label
+	trashSize  int64                 // bytes they hold
+	left       map[string]int        // trash view: days left per chat id, for the "Nd left" column
+	entries    map[string]chat.Entry // trash view: the trash entry of each chat id
 
 	previews map[string][]chat.Turn // id -> side panel turns, read once
 	counts   map[string]int         // id -> prompt count, once the cursor rested there
