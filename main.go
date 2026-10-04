@@ -9,6 +9,7 @@ import (
 	"github.com/vyagh/reap/internal/claude"
 	"github.com/vyagh/reap/internal/cli"
 	"github.com/vyagh/reap/internal/codex"
+	"github.com/vyagh/reap/internal/tui"
 )
 
 func main() {
@@ -27,5 +28,6 @@ func main() {
 		CwdOf:    claude.CwdOf,
 		Now:      time.Now,
 		Terminal: fi != nil && fi.Mode()&os.ModeCharDevice != 0,
+		Screen:   tui.Run,
 	}))
 }
