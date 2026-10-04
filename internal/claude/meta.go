@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/vyagh/reap/internal/chat"
 )
@@ -63,17 +64,39 @@ type scan struct {
 	hasPrompt bool
 }
 
+// readers hold the 64 KB buffers of the readers that take a whole file or the
+// tail of one, so a listing does not make a new one for every transcript.
+var readers = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 64<<10) }}
+
 func (s *scan) readWhole(f *os.File) {
-	br := bufio.NewReaderSize(f, 64<<10)
+	br := readers.Get().(*bufio.Reader)
+	defer readers.Put(br)
+	br.Reset(f)
+	var long []byte
 	for {
-		line, err := br.ReadString('\n')
-		if line != "" {
+		line, err := readLine(br, &long)
+		if len(line) > 0 {
 			s.feed(line)
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+// readLine is the next line with its newline, good until the next call. A line
+// longer than the reader's buffer is gathered in long, which is reused.
+func readLine(br *bufio.Reader, long *[]byte) ([]byte, error) {
+	line, err := br.ReadSlice('\n')
+	if err != bufio.ErrBufferFull {
+		return line, err
+	}
+	*long = append((*long)[:0], line...)
+	for err == bufio.ErrBufferFull {
+		line, err = br.ReadSlice('\n')
+		*long = append(*long, line...)
+	}
+	return *long, err
 }
 
 // readEnds reads lines from the start while the file is small, or until a
@@ -85,12 +108,13 @@ func (s *scan) readEnds(f *os.File) {
 	}
 	size := fi.Size()
 	br := bufio.NewReader(f)
+	var long []byte
 	var read int64
 	for size <= wholeMax || (read < headMax && (s.prompt == "" || s.cwd == "")) {
-		line, err := br.ReadBytes('\n')
+		line, err := readLine(br, &long)
 		read += int64(len(line))
 		if len(line) > 0 {
-			s.feed(string(line))
+			s.feed(line)
 		}
 		if err == io.EOF {
 			break
@@ -106,35 +130,40 @@ func (s *scan) readEnds(f *os.File) {
 	if _, err := f.Seek(start-1, io.SeekStart); err != nil {
 		return
 	}
-	var buf bytes.Buffer
-	buf.Grow(int(size - start + 1))
-	if _, err := buf.ReadFrom(f); err != nil {
-		return
-	}
-	data := buf.Bytes()
+	br = readers.Get().(*bufio.Reader)
+	defer readers.Put(br)
+	br.Reset(f)
 	if start > read {
-		_, data, _ = bytes.Cut(data, []byte("\n"))
+		if _, err := readLine(br, &long); err != nil {
+			return
+		}
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		s.feed(line)
+	for {
+		line, err := readLine(br, &long)
+		if len(line) > 0 {
+			s.feed(line)
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 
 // feed takes one line. Most lines cannot carry a title, a prompt or a folder,
 // and are rejected on a text match before the slow parse.
-func (s *scan) feed(line string) {
-	isUser := strings.Contains(line, `"type":"user"`)
-	if s.full && isUser && !strings.Contains(line, `"tool_result"`) && !strings.Contains(line, `"isMeta":true`) {
+func (s *scan) feed(line []byte) {
+	isUser := bytes.Contains(line, []byte(`"type":"user"`))
+	if s.full && isUser && !bytes.Contains(line, []byte(`"tool_result"`)) && !bytes.Contains(line, []byte(`"isMeta":true`)) {
 		s.n++
 	}
-	isTitle := strings.Contains(line, `"custom-title"`) || strings.Contains(line, `"agent-name"`) ||
-		strings.Contains(line, `"ai-title"`)
-	wantCwd := s.cwd == "" && strings.Contains(line, `"cwd"`)
+	isTitle := bytes.Contains(line, []byte(`"custom-title"`)) || bytes.Contains(line, []byte(`"agent-name"`)) ||
+		bytes.Contains(line, []byte(`"ai-title"`))
+	wantCwd := s.cwd == "" && bytes.Contains(line, []byte(`"cwd"`))
 	if !isTitle && !wantCwd && (s.hasPrompt || !isUser) {
 		return
 	}
 	var o map[string]any
-	if json.Unmarshal([]byte(line), &o) != nil {
+	if json.Unmarshal(line, &o) != nil {
 		return
 	}
 	if s.cwd == "" {
