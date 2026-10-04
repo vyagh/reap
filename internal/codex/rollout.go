@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"github.com/vyagh/reap/internal/chat"
 )
@@ -48,15 +47,9 @@ type message struct {
 	} `json:"payload"`
 }
 
-// isSpace is Python's str.isspace, which also counts the four separator
-// controls 0x1c to 0x1f.
-func isSpace(r rune) bool {
-	return unicode.IsSpace(r) || '\x1c' <= r && r <= '\x1f'
-}
-
 // collapse turns every run of whitespace into one space and trims the ends.
 func collapse(s string) string {
-	return strings.Join(strings.FieldsFunc(s, isSpace), " ")
+	return strings.Join(strings.FieldsFunc(s, chat.IsSpace), " ")
 }
 
 func skipped(text string) bool {
@@ -122,7 +115,7 @@ func peek(path string, maxTurns int) ([]chat.Turn, error) {
 				parts = append(parts, s)
 			}
 		}
-		text := strings.TrimFunc(strings.Join(parts, " "), isSpace)
+		text := strings.TrimFunc(strings.Join(parts, " "), chat.IsSpace)
 		if text == "" || p.Role == "user" && skipped(text) {
 			return true
 		}

@@ -2,28 +2,82 @@
 package tui
 
 import (
+	"cmp"
+	"encoding/binary"
+	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v3"
 	"github.com/gdamore/tcell/v3/color"
-	"golang.org/x/sys/unix"
-	"golang.org/x/term"
 )
 
-// colours is the colour count of the terminal's own entry, which is what
-// curses goes by (tput reads the same entry). It is 0 when the entry cannot
-// be read, and tcell then guesses from the name of TERM.
+// colours is the colour count of the terminal's own compiled terminfo entry,
+// which is what curses goes by. It is 0 when no entry is found or readable,
+// and tcell then guesses from the name of TERM.
 func colours() int {
-	out, err := exec.Command("tput", "colors").Output()
-	if err != nil {
+	name := os.Getenv("TERM")
+	if name == "" {
 		return 0
 	}
-	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	return n
+	for _, dir := range terminfoDirs() {
+		for _, sub := range []string{name[:1], fmt.Sprintf("%x", name[0])} {
+			if data, err := os.ReadFile(filepath.Join(dir, sub, name)); err == nil {
+				return coloursIn(data)
+			}
+		}
+	}
+	return 0
+}
+
+// terminfoDirs are the folders curses reads entries from, in its order.
+func terminfoDirs() []string {
+	var dirs []string
+	if d := os.Getenv("TERMINFO"); d != "" {
+		dirs = append(dirs, d)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".terminfo"))
+	}
+	if v, ok := os.LookupEnv("TERMINFO_DIRS"); ok {
+		for _, d := range strings.Split(v, ":") {
+			dirs = append(dirs, cmp.Or(d, "/usr/share/terminfo"))
+		}
+	}
+	return append(dirs, "/etc/terminfo", "/lib/terminfo", "/usr/share/terminfo")
+}
+
+// coloursIn reads the colors number, the 14th, from a compiled entry: six
+// 16 bit counts (magic, names, booleans, numbers, strings, string table), the
+// names, the booleans padded to an even length, then the numbers. They are 16
+// bits wide, or 32 in the extended format (magic 0x021e). 0 if it has none.
+func coloursIn(data []byte) int {
+	const colorsIndex = 13
+	if len(data) < 12 {
+		return 0
+	}
+	count := func(i int) int { return int(binary.LittleEndian.Uint16(data[2*i:])) }
+	width := 2
+	switch count(0) {
+	case 0x011a:
+	case 0x021e:
+		width = 4
+	default:
+		return 0
+	}
+	at := 12 + count(1) + count(2)
+	at += at % 2
+	at += colorsIndex * width
+	if count(3) <= colorsIndex || len(data) < at+width {
+		return 0
+	}
+	if width == 2 {
+		return max(0, int(int16(binary.LittleEndian.Uint16(data[at:]))))
+	}
+	return max(0, int(int32(binary.LittleEndian.Uint32(data[at:]))))
 }
 
 // openScreen starts tcell. Without it tcell reads no terminfo and takes any
@@ -44,42 +98,6 @@ func openScreen() (tcell.Screen, error) {
 	s.HideCursor()
 	s.EnableMouse(tcell.MouseButtonEvents)
 	return s, nil
-}
-
-// lightBackground asks the terminal for its background colour with OSC 11.
-// known is false when it does not answer within 150 ms (reap:894-919).
-func lightBackground() (light, known bool) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-	if err != nil {
-		return false, false
-	}
-	defer tty.Close()
-	fd := int(tty.Fd())
-	old, err := term.MakeRaw(fd)
-	if err != nil {
-		return false, false
-	}
-	defer term.Restore(fd, old)
-	if _, err := tty.WriteString("\x1b]11;?\x1b\\"); err != nil {
-		return false, false
-	}
-	// A local terminal answers in a few ms. The reply is read byte by byte so
-	// that typeahead after it stays unread. Fd put the file in blocking mode,
-	// so a read deadline would not work; poll waits instead.
-	end := time.Now().Add(150 * time.Millisecond)
-	var reply []byte
-	b := make([]byte, 1)
-	for !strings.HasSuffix(string(reply), "\x1b\\") && !strings.HasSuffix(string(reply), "\a") {
-		wait := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-		if n, err := unix.Poll(wait, max(0, int(time.Until(end).Milliseconds()))); n == 0 || err != nil {
-			break
-		}
-		if _, err := tty.Read(b); err != nil {
-			break
-		}
-		reply = append(reply, b[0])
-	}
-	return parseBackground(string(reply))
 }
 
 // parseBackground weighs the colour in an OSC 11 reply as perceived
@@ -132,8 +150,8 @@ func (u *ui) put(y, x int, text string, style tcell.Style) {
 }
 
 // keyName is how the dispatch spells a key: the character typed, or Up, Down,
-// Left, Right, PgUp, PgDn, Enter, Esc, Tab, BTab or BSpace. Anything else,
-// and any key held with Alt, is "".
+// Left, Right, PgUp, PgDn, Enter (Ctrl-J too, reap:1686), Esc, Tab, BTab or
+// BSpace. Anything else, and any key held with Alt, is "".
 func keyName(ev *tcell.EventKey) string {
 	if ev.Modifiers()&tcell.ModAlt != 0 {
 		return ""
@@ -153,7 +171,7 @@ func keyName(ev *tcell.EventKey) string {
 		return "PgUp"
 	case tcell.KeyPgDn:
 		return "PgDn"
-	case tcell.KeyEnter:
+	case tcell.KeyEnter, tcell.KeyCtrlJ, tcell.KeyLF:
 		return "Enter"
 	case tcell.KeyEsc:
 		return "Esc"

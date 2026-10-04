@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unicode"
 
 	"github.com/vyagh/reap/internal/chat"
 )
@@ -65,7 +64,7 @@ type scan struct {
 }
 
 func (s *scan) readWhole(f *os.File) {
-	br := bufio.NewReader(f)
+	br := bufio.NewReaderSize(f, 64<<10)
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
@@ -107,10 +106,12 @@ func (s *scan) readEnds(f *os.File) {
 	if _, err := f.Seek(start-1, io.SeekStart); err != nil {
 		return
 	}
-	data, err := io.ReadAll(f)
-	if err != nil {
+	var buf bytes.Buffer
+	buf.Grow(int(size - start + 1))
+	if _, err := buf.ReadFrom(f); err != nil {
 		return
 	}
+	data := buf.Bytes()
 	if start > read {
 		_, data, _ = bytes.Cut(data, []byte("\n"))
 	}
@@ -172,7 +173,7 @@ func (s *scan) takePrompt(o map[string]any) {
 	default:
 		return
 	}
-	text = strings.TrimFunc(text, isSpace)
+	text = strings.TrimFunc(text, chat.IsSpace)
 	if text == "" || hasAnyPrefix(text, "<local-command", "<command-", "Caveat:") {
 		return
 	}
@@ -201,13 +202,7 @@ func hasAnyPrefix(s string, prefixes ...string) bool {
 	return false
 }
 
-// isSpace is Python's str.isspace: unicode.IsSpace plus the separator
-// controls 0x1c to 0x1f.
-func isSpace(r rune) bool {
-	return unicode.IsSpace(r) || '\x1c' <= r && r <= '\x1f'
-}
-
 // squeeze turns every run of whitespace into one space and trims the ends.
 func squeeze(s string) string {
-	return strings.Join(strings.FieldsFunc(s, isSpace), " ")
+	return strings.Join(strings.FieldsFunc(s, chat.IsSpace), " ")
 }

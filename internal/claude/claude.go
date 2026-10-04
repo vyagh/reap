@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,8 +139,8 @@ func (a *Agent) listDir(dir string, live liveSet, full bool) []chat.Chat {
 			Titled: i.title != "",
 			Cwd:    i.cwd,
 			Msgs:   i.n,
-			Size: fi.Size() + dirSize(filepath.Join(dir, id)) +
-				dirSize(filepath.Join(a.home.Claude, "file-history", id)),
+			Size: fi.Size() + chat.DirSize(filepath.Join(dir, id)) +
+				chat.DirSize(filepath.Join(a.home.Claude, "file-history", id)),
 			Mod:  fi.ModTime(),
 			Live: live.has(id),
 		}
@@ -153,28 +152,4 @@ func (a *Agent) listDir(dir string, live liveSet, full bool) []chat.Chat {
 		chats = append(chats, c)
 	}
 	return chats
-}
-
-// dirSize is the bytes of every file under dir, 0 if dir is not a folder.
-// Links to folders are not followed, links to files count what they point at
-// (reap:242-248).
-func dirSize(dir string) int64 {
-	root, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return 0
-	}
-	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-		return 0
-	}
-	var total int64
-	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
-			total += fi.Size()
-		}
-		return nil
-	})
-	return total
 }

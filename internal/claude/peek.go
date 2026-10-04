@@ -66,7 +66,7 @@ func turnOf(line []byte, textOnly bool) (chat.Turn, bool) {
 	case []any:
 		parts = blockParts(c, textOnly)
 	}
-	text := strings.TrimFunc(strings.Join(nonEmpty(parts), " "), isSpace)
+	text := strings.TrimFunc(strings.Join(nonEmpty(parts), " "), chat.IsSpace)
 	if text == "" || hasAnyPrefix(text, "<local-command", "<command-", "<task-notification", "<system-reminder", "Caveat:") {
 		return chat.Turn{}, false
 	}

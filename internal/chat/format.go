@@ -3,6 +3,7 @@ package chat
 import (
 	"fmt"
 	"time"
+	"unicode"
 )
 
 // Clean drops control characters (escape, bell, newline, tab and the rest
@@ -16,6 +17,12 @@ func Clean(s string) string {
 		}
 	}
 	return string(b)
+}
+
+// IsSpace is Python's str.isspace: unicode.IsSpace plus the separator
+// controls 0x1c to 0x1f.
+func IsSpace(r rune) bool {
+	return unicode.IsSpace(r) || '\x1c' <= r && r <= '\x1f'
 }
 
 // Human is a byte count the way the list prints it: whole bytes and kilobytes,

@@ -66,18 +66,27 @@ func ReadEntry(dir string) (Entry, error) {
 			break
 		}
 	}
-	e.Size = dirSize(dir)
+	e.Size = DirSize(dir)
 	return e, nil
 }
 
-// dirSize adds up the files under dir, skipping any it cannot stat.
-func dirSize(dir string) int64 {
+// DirSize is the bytes of every file under dir, 0 if dir is not a folder.
+// Links to folders are not followed, links to files count what they point at
+// (reap:242-248).
+func DirSize(dir string) int64 {
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return 0
+	}
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return 0
+	}
 	var total int64
-	filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if fi, err := d.Info(); err == nil {
+		if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
 			total += fi.Size()
 		}
 		return nil

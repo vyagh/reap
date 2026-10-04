@@ -168,7 +168,7 @@ func (u *ui) purge() {
 	switch {
 	case len(sel) == 0:
 		u.msg = message{text: "nothing selected"}
-	case u.confirmPurge(sel):
+	case u.confirmDelete(sel, true):
 		u.msg = u.removeForGood(sel, "purged ")
 		u.trashChanged(sel)
 	default:
@@ -261,50 +261,6 @@ func (u *ui) confirmAsk(prompt, hint string) bool {
 	u.box(y0, x0, 5, ww, prompt, u.pal.danger)
 	u.add(y0+2, x0+3, "y", u.pal.danger)
 	u.add(y0+2, x0+5, hint, u.pal.dim)
-	return u.askedYes()
-}
-
-// confirmPurge lists the chats about to be purged, biggest first, and reports
-// whether the next key is y (reap:1143-1171).
-func (u *ui) confirmPurge(sel []*chat.Chat) bool {
-	sel = slices.Clone(sel)
-	slices.SortStableFunc(sel, func(a, b *chat.Chat) int { return cmp.Compare(b.Size, a.Size) })
-	var size int64
-	other := false
-	for _, c := range sel {
-		size += c.Size
-		other = other || c.Source != chat.Claude
-	}
-	w, h := u.s.Size()
-	shown := min(len(sel), 8, max(1, h-8))
-	more := len(sel) - shown
-	ww := min(max(50, w*2/3), w-2)
-	hh := shown + 5
-	if more > 0 {
-		hh++
-	}
-	y0, x0 := max(0, (h-hh)/2), max(0, (w-ww)/2)
-	u.box(y0, x0, hh, ww, fmt.Sprintf("purge %s · %s", chat.Plural(len(sel)), chat.Human(size)), u.pal.danger)
-	for j, c := range sel[:shown] {
-		extra := 0
-		if c.Source != chat.Claude {
-			extra = rlen(string(c.Source)) + 2
-		}
-		u.add(y0+2+j, x0+3, fmt.Sprintf("%6s", chat.Human(c.Size)), u.pal.dim)
-		u.add(y0+2+j, x0+11, chat.Fit(c.Label, ww-14-extra), tcell.Style{})
-		if extra > 0 {
-			u.add(y0+2+j, x0+ww-2-rlen(string(c.Source)), string(c.Source), u.pal.dim)
-		}
-	}
-	if more > 0 {
-		u.add(y0+2+shown, x0+11, fmt.Sprintf("… and %d more", more), u.pal.dim)
-	}
-	u.add(y0+hh-2, x0+3, "y", u.pal.danger)
-	hint := "gone for good · "
-	if other && !u.start.NoCodexCLI {
-		hint += "codex chats via codex delete · "
-	}
-	u.add(y0+hh-2, x0+5, hint+"other key cancels", u.pal.dim)
 	return u.askedYes()
 }
 

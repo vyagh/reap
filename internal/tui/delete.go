@@ -32,7 +32,7 @@ func (u *ui) askDelete() {
 	slices.SortFunc(sel, func(a, b *chat.Chat) int {
 		return cmp.Or(cmp.Compare(b.Size, a.Size), cmp.Compare(a.ID, b.ID))
 	})
-	if !u.confirmDelete(sel) {
+	if !u.confirmDelete(sel, false) {
 		u.msg = message{text: "cancelled"}
 		return
 	}
@@ -128,9 +128,12 @@ func (u *ui) undoDelete() {
 	}
 }
 
-// confirmDelete draws the box that lists what would be deleted, the biggest
-// chats first, and reports whether the user answered y (reap:1143-1176).
-func (u *ui) confirmDelete(sel []*chat.Chat) bool {
+// confirmDelete draws the box that lists what would be deleted, or purged for
+// good, the biggest chats first, and reports whether the user answered y
+// (reap:1143-1176).
+func (u *ui) confirmDelete(sel []*chat.Chat, purge bool) bool {
+	sel = slices.Clone(sel)
+	slices.SortStableFunc(sel, func(a, b *chat.Chat) int { return cmp.Compare(b.Size, a.Size) })
 	var total int64
 	for _, c := range sel {
 		total += c.Size
@@ -144,7 +147,11 @@ func (u *ui) confirmDelete(sel []*chat.Chat) bool {
 		hh++
 	}
 	y0, x0 := max(0, (h-hh)/2), max(0, (w-ww)/2)
-	u.box(y0, x0, hh, ww, fmt.Sprintf("delete %s · %s", chat.Plural(len(sel)), chat.Human(total)), u.pal.bold)
+	verb, style, yStyle := "delete", u.pal.bold, u.pal.ok
+	if purge {
+		verb, style, yStyle = "purge", u.pal.danger, u.pal.danger
+	}
+	u.box(y0, x0, hh, ww, fmt.Sprintf("%s %s · %s", verb, chat.Plural(len(sel)), chat.Human(total)), style)
 	var others []string
 	for _, c := range sel {
 		src := string(c.Source)
@@ -168,18 +175,24 @@ func (u *ui) confirmDelete(sel []*chat.Chat) bool {
 	if more > 0 {
 		u.add(y0+2+shown, x0+11, fmt.Sprintf("… and %d more", more), u.pal.dim)
 	}
-	hint := fmt.Sprintf("move to trash · undo for %dd · other key cancels", chat.TrashDays)
-	if len(others) > 0 {
+	var hint string
+	switch {
+	case purge:
+		hint = "gone for good · "
+		if len(others) > 0 && !u.start.NoCodexCLI {
+			hint += "codex chats via codex delete · "
+		}
+		hint += "other key cancels"
+	case len(others) > 0:
 		via := "via codex archive"
 		if u.start.NoCodexCLI {
 			via = "moved to reap's trash"
 		}
 		hint = fmt.Sprintf("move to trash · %s chats %s · undo for %dd", strings.Join(others, ", "), via, chat.TrashDays)
+	default:
+		hint = fmt.Sprintf("move to trash · undo for %dd · other key cancels", chat.TrashDays)
 	}
-	u.add(y0+hh-2, x0+3, "y", u.pal.ok)
+	u.add(y0+hh-2, x0+3, "y", yStyle)
 	u.add(y0+hh-2, x0+5, hint, u.pal.dim)
-	u.s.Show()
-	ev := u.wait(0)
-	key, ok := ev.(*tcell.EventKey)
-	return ok && (keyName(key) == "y" || keyName(key) == "Y")
+	return u.askedYes()
 }
