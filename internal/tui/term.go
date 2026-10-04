@@ -4,7 +4,6 @@ package tui
 import (
 	"os"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -47,8 +46,6 @@ func openScreen() (tcell.Screen, error) {
 	return s, nil
 }
 
-var rgbReply = regexp.MustCompile(`(?i)rgb:([0-9a-f]+)/([0-9a-f]+)/([0-9a-f]+)`)
-
 // lightBackground asks the terminal for its background colour with OSC 11.
 // known is false when it does not answer within 150 ms (reap:894-919).
 func lightBackground() (light, known bool) {
@@ -88,12 +85,14 @@ func lightBackground() (light, known bool) {
 // parseBackground weighs the colour in an OSC 11 reply as perceived
 // brightness, scaling each channel to 0..255 whatever its digit count.
 func parseBackground(reply string) (light, known bool) {
-	m := rgbReply.FindStringSubmatch(reply)
-	if m == nil {
+	_, rgb, ok := strings.Cut(strings.ToLower(reply), "rgb:")
+	parts := strings.SplitN(rgb, "/", 3)
+	if !ok || len(parts) != 3 {
 		return false, false
 	}
 	var c [3]int64
-	for i, hex := range m[1:] {
+	for i, part := range parts {
+		hex := hexPrefix(part)
 		n, err := strconv.ParseInt(hex, 16, 64)
 		if err != nil {
 			return false, false
@@ -101,6 +100,16 @@ func parseBackground(reply string) (light, known bool) {
 		c[i] = n * 255 / (1<<(4*len(hex)) - 1)
 	}
 	return c[0]*299+c[1]*587+c[2]*114 >= 128000, true
+}
+
+// hexPrefix is the run of hex digits s starts with.
+func hexPrefix(s string) string {
+	for i, r := range s {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 // add writes text at row y, column x, and stops one column short of the right
