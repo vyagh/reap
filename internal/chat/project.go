@@ -55,7 +55,7 @@ func SplitPath(h Homes, cwd, fallback string) (leaf, parent string) {
 	if strings.HasPrefix(cwd, h.Home) {
 		p = "~" + cwd[len(h.Home):]
 	}
-	p = strings.TrimRight(p, "/")
+	p = strings.TrimRight(p, string(filepath.Separator))
 	leaf = lastPart(p)
 	if leaf == "" {
 		return p, ""
@@ -67,10 +67,10 @@ func SplitPath(h Homes, cwd, fallback string) (leaf, parent string) {
 // it, unless nothing else is left, as in 0.5.0.
 func dirPart(path string) string {
 	head := path[:strings.LastIndexByte(path, filepath.Separator)+1]
-	if strings.Trim(head, "/") == "" {
+	if strings.Trim(head, string(filepath.Separator)) == "" {
 		return head
 	}
-	return strings.TrimRight(head, "/")
+	return strings.TrimRight(head, string(filepath.Separator))
 }
 
 func projectsDir(h Homes) string {
