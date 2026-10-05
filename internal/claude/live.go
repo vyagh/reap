@@ -39,6 +39,10 @@ func liveSessions(h chat.Homes) liveSet {
 func (l *liveSet) readSessions(dir string) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
+		// Windows answers "not found" for a path that is there but is not a folder.
+		if _, serr := os.Lstat(dir); !errors.Is(serr, fs.ErrNotExist) {
+			l.all = true
+		}
 		return
 	}
 	if err != nil {
