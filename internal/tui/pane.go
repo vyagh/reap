@@ -63,7 +63,7 @@ func (u *ui) drawPane(it item) (string, tcell.Style) {
 	}
 	if u.trashing {
 		x := f.px + rlen(src) + 3 + rlen(state)
-		left := u.left[c.ID]
+		left := u.left[key(c)]
 		style := u.pal.dim
 		if left <= 1 {
 			style = u.pal.yel
@@ -89,10 +89,10 @@ func (u *ui) drawPane(it item) (string, tcell.Style) {
 // paneTurns draws the first messages of a chat from row 6. The read happens once per chat, so holding j stays smooth.
 func (u *ui) paneTurns(c *chat.Chat, pw int) {
 	f, p := &u.f, &u.pal
-	turns, ok := u.previews[c.ID]
+	turns, ok := u.previews[key(c)]
 	if !ok {
 		turns, _ = u.start.Agents.For(c.Source).Peek(*c, paneTurns, true)
-		u.previews[c.ID] = turns
+		u.previews[key(c)] = turns
 	}
 	y := 6
 	if len(turns) == 0 {

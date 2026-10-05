@@ -31,8 +31,8 @@ func trashLoader(start cli.Start, left map[string]int, entries map[string]chat.E
 		for _, e := range chat.ListTrash(start.Homes, start.CwdOf) {
 			c := e.Chat()
 			chats = append(chats, c)
-			left[c.ID] = chat.DaysLeft(c.Mod, now)
-			entries[c.ID] = e
+			left[key(&c)] = chat.DaysLeft(c.Mod, now)
+			entries[key(&c)] = e
 			if c.Mod.After(recent[c.Proj]) {
 				recent[c.Proj] = c.Mod
 			}
@@ -100,7 +100,7 @@ func (u *ui) focusRestored(back []chat.Chat) {
 	}
 	for _, c := range order(all, u.sortMode, u.grouped) {
 		if ids[c.ID] && (u.tab == "" || u.tab == "all" || u.tab == string(c.Source)) {
-			u.focus = c.ID
+			u.focus = key(c)
 			break
 		}
 	}
@@ -114,7 +114,7 @@ func (u *ui) focusRestored(back []chat.Chat) {
 func (u *ui) pickedChats() []*chat.Chat {
 	var sel []*chat.Chat
 	for i := range u.chats {
-		if u.picked[u.chats[i].ID] {
+		if u.picked[key(&u.chats[i])] {
 			sel = append(sel, &u.chats[i])
 		}
 	}
@@ -132,7 +132,7 @@ func (u *ui) restore() {
 	}
 	var failed []*chat.Chat
 	for _, c := range sel {
-		e, ok := u.entries[c.ID]
+		e, ok := u.entries[key(c)]
 		if a := u.start.Agents.For(c.Source); ok && a != nil && a.Restore(e) == nil {
 			u.restored = append(u.restored, *c)
 		} else {
@@ -211,7 +211,7 @@ func (u *ui) empty() {
 func (u *ui) removeForGood(sel []*chat.Chat, done string) message {
 	var failed []*chat.Chat
 	for _, c := range sel {
-		e, ok := u.entries[c.ID]
+		e, ok := u.entries[key(c)]
 		if !ok {
 			continue
 		}

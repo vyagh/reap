@@ -149,10 +149,10 @@ func (u *ui) pick() {
 	}
 	if c.Live {
 		u.msg = message{text: "can't pick a live session"}
-	} else if u.picked[c.ID] {
-		delete(u.picked, c.ID)
+	} else if u.picked[key(c)] {
+		delete(u.picked, key(c))
 	} else {
-		u.picked[c.ID] = true
+		u.picked[key(c)] = true
 	}
 	u.goTo(u.f.pos + 1)
 }
@@ -162,7 +162,7 @@ func (u *ui) pickAll() {
 	var able []string
 	for _, c := range u.f.vis {
 		if !c.Live && !(u.grouped && u.folded[c.Proj]) {
-			able = append(able, c.ID)
+			able = append(able, key(c))
 		}
 	}
 	all := len(able) > 0
@@ -256,6 +256,6 @@ func (u *ui) toggleHidden() {
 	// 0.5.0 reuses the variable that holds the first frame's folder here, so the
 	// cursor only follows when its chat is the first one in the list.
 	if near != nil && at == 0 {
-		u.focus = near.ID
+		u.focus = key(near)
 	}
 }

@@ -79,12 +79,12 @@ type ui struct {
 	home     string // project folder the cursor lands on in the first frame, then ""
 
 	chats    []chat.Chat
-	by       map[string]*chat.Chat // id -> chat
+	by       map[string]*chat.Chat // key -> chat
 	loadedAt time.Time             // when chats was loaded; ages are counted from here
 	keep     map[string]float64    // hidden chat id -> epoch hidden, refreshed on reload
 	showKept bool                  // hidden chats are shown (starts false on every launch)
 
-	picked    map[string]bool // ids picked with space
+	picked    map[string]bool // keys picked with space
 	cur, top  int             // cursor item and first drawn item
 	flt       string
 	filtering bool
@@ -92,18 +92,18 @@ type ui struct {
 	sortMode  string
 	undo      [][]chat.Entry  // this session's deletes, one list of trash entries each
 	folded    map[string]bool // collapsed project groups
-	focus     string          // id the cursor lands on after a view change
+	focus     string          // key the cursor lands on after a view change
 	changed   bool
 	restored  []chat.Chat
 	tip       bool // show the pin tip until the next key that is not a tab switch
 
 	trashCount int                   // trash entries, for the "trash" label
 	trashSize  int64                 // bytes they hold
-	left       map[string]int        // trash view: days left per chat id, for the "Nd left" column
-	entries    map[string]chat.Entry // trash view: the trash entry of each chat id
+	left       map[string]int        // trash view: days left per chat key, for the "Nd left" column
+	entries    map[string]chat.Entry // trash view: the trash entry of each chat key
 
-	previews map[string][]chat.Turn // id -> side panel turns, read once
-	counts   map[string]int         // id -> prompt count, once the cursor rested there
+	previews map[string][]chat.Turn // key -> side panel turns, read once
+	counts   map[string]int         // key -> prompt count, once the cursor rested there
 
 	tabs        []string       // "all" first, then the installed agents; none with one agent
 	agentCounts map[string]int // chats per agent
@@ -114,6 +114,15 @@ type ui struct {
 	quit   bool
 
 	f frame
+}
+
+// key names one chat on the screen. A copied project folder holds the same id
+// twice, so the id alone would make two rows one chat.
+func key(c *chat.Chat) string {
+	if c.Path != "" {
+		return c.Path
+	}
+	return c.ID
 }
 
 // Run shows the full-screen view until the user quits.
@@ -181,9 +190,9 @@ func (u *ui) reload() error {
 	u.agentCounts = map[string]int{}
 	for i := range u.chats {
 		c := &u.chats[i]
-		u.by[c.ID] = c
+		u.by[key(c)] = c
 		u.agentCounts[string(c.Source)]++
-		if n, ok := u.counts[c.ID]; ok {
+		if n, ok := u.counts[key(c)]; ok {
 			c.Msgs = n
 		}
 	}
@@ -261,7 +270,7 @@ func (u *ui) count(c *chat.Chat) {
 		n = 0
 	}
 	c.Msgs = n
-	u.counts[c.ID] = n
+	u.counts[key(c)] = n
 }
 
 func (u *ui) press(k string) {

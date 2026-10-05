@@ -125,7 +125,7 @@ func (u *ui) drawDivider(y int) {
 
 func (u *ui) drawRow(y int, cursor bool, c *chat.Chat) {
 	f, p := &u.f, &u.pal
-	picked := u.picked[c.ID]
+	picked := u.picked[key(c)]
 	mark, markStyle := "·", p.dim
 	switch {
 	case c.Live:
@@ -138,7 +138,7 @@ func (u *ui) drawRow(y int, cursor bool, c *chat.Chat) {
 		indent = " "
 	}
 	var tail string
-	daysLeft := u.left[c.ID]
+	daysLeft := u.left[key(c)]
 	if u.trashing {
 		tail = fmt.Sprintf("%dd left", daysLeft)
 	}

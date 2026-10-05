@@ -88,7 +88,7 @@ func (u *ui) plan() {
 		u.focus = ""
 		for _, it := range f.items {
 			if it.kind == row && it.chat.Dir == u.home {
-				u.focus = it.chat.ID
+				u.focus = key(it.chat)
 				break
 			}
 		}
@@ -96,7 +96,7 @@ func (u *ui) plan() {
 	}
 	if u.focus != "" {
 		for i, it := range f.items {
-			if it.kind == row && it.chat.ID == u.focus {
+			if it.kind == row && key(it.chat) == u.focus {
 				u.cur = i
 				break
 			}
