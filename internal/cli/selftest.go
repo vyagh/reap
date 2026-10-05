@@ -101,7 +101,7 @@ func selftestTrash(env Env) error {
 	}
 	defer os.RemoveAll(scratch)
 	h := env.Homes
-	h.Trash = scratch
+	h.Trash, h.CodexTrash = scratch, ""
 	proj := func(cwd string) string { return filepath.Join(h.Claude, "projects", chat.DirnameFor(cwd)) }
 	app := h.Home + "/app"
 	deepCwd := h.Home + "/work/deep-app"

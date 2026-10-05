@@ -34,6 +34,13 @@ func (a *Agent) archivedPath(id string) string {
 	return ""
 }
 
+// trashHomes points Move at the Codex folder's trash.
+func (a *Agent) trashHomes() chat.Homes {
+	h := a.h
+	h.Trash = h.CodexTrash
+	return h
+}
+
 // Trash has codex archive the chat and records where the archived file is, since
 // moving a rollout by hand would leave Codex's database pointing at nothing. With
 // noCLI the rollout moves into reap's trash instead.
@@ -53,7 +60,7 @@ func (a *Agent) trashFiles(c chat.Chat, rec chat.Record) (chat.Entry, error) {
 	if len(paths) == 0 {
 		return chat.Entry{}, fmt.Errorf("not trashed: no rollout file for %s under %s", c.ID, filepath.Join(a.h.Codex, "sessions"))
 	}
-	return chat.Move(a.h, c.ID, paths, rec)
+	return chat.Move(a.trashHomes(), c.ID, paths, rec)
 }
 
 // archive runs codex archive and writes an entry for it. If the entry cannot be
@@ -66,7 +73,7 @@ func (a *Agent) archive(c chat.Chat, rec chat.Record) (chat.Entry, error) {
 	if p := a.archivedPath(c.ID); p != "" {
 		rec.Archived = &p
 	}
-	e, err := chat.Move(a.h, c.ID, nil, rec)
+	e, err := chat.Move(a.trashHomes(), c.ID, nil, rec)
 	if err != nil {
 		return chat.Entry{}, fmt.Errorf("codex archived %s but reap has no trash entry for it (codex unarchive %s brings it back): %w", c.ID, c.ID, err)
 	}

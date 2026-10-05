@@ -86,7 +86,11 @@ func onDisk(h Homes, id string, agents Agents) bool {
 			return true
 		}
 	}
-	dirs, _ := filepath.Glob(filepath.Join(h.Trash, "*"))
+	var dirs []string
+	for _, t := range h.trashDirs() {
+		found, _ := filepath.Glob(filepath.Join(t, "*"))
+		dirs = append(dirs, found...)
+	}
 	for _, d := range dirs {
 		data, err := os.ReadFile(filepath.Join(d, "reap-meta.json"))
 		if err != nil {

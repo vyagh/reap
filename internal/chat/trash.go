@@ -116,17 +116,19 @@ func putBack(dir string, rec Record, cause error) error {
 	return fmt.Errorf("%s: %w", msg, errors.Join(append([]error{cause}, failures...)...))
 }
 
-// trashPaths lists what sits directly in the trash. Names that start with a dot
+// trashPaths lists what sits directly in the trash folders. Names that start with a dot
 // are left out, as in 0.5.0.
 func trashPaths(h Homes) []string {
-	names, err := os.ReadDir(h.Trash)
-	if err != nil {
-		return nil
-	}
 	var paths []string
-	for _, n := range names {
-		if !strings.HasPrefix(n.Name(), ".") {
-			paths = append(paths, filepath.Join(h.Trash, n.Name()))
+	for _, dir := range h.trashDirs() {
+		names, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, n := range names {
+			if !strings.HasPrefix(n.Name(), ".") {
+				paths = append(paths, filepath.Join(dir, n.Name()))
+			}
 		}
 	}
 	return paths
