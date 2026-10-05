@@ -10,9 +10,8 @@ func init() {
 	afterRun = (*ui).startLaunch
 }
 
-// open checks the chat under the cursor and, when nothing stops it, sets
-// u.launch and leaves the screen (reap:1686-1694). The refusals come in
-// this order: open elsewhere, folder gone, command not on PATH.
+// open sets u.launch for the chat under the cursor and leaves the screen. The
+// refusals come in this order: open elsewhere, folder gone, command not on PATH.
 func (u *ui) open() {
 	c := u.f.at(u.cur)
 	if c == nil {
@@ -48,8 +47,6 @@ func isDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
-// startLaunch starts the chat Enter opened, once the screen is closed. It
-// does nothing when the user left without opening one.
 func (u *ui) startLaunch() error {
 	if u.launch == nil {
 		return nil
@@ -57,8 +54,7 @@ func (u *ui) startLaunch() error {
 	return start(*u.launch)
 }
 
-// env is the environment the agent starts with: the folder is the working
-// directory, and PWD and OLDPWD say so the way a shell's cd does (reap:632-634).
+// env is the agent's environment, with PWD and OLDPWD set as a shell's cd would.
 func (l launch) env() []string {
 	old := os.Getenv("PWD")
 	if old == "" {

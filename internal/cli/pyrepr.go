@@ -6,9 +6,8 @@ import (
 	"unicode"
 )
 
-// pyStr writes s the way Python's repr does: single quotes unless s holds a
-// single quote and no double quote, backslash escapes, and \x, \u or \U for
-// what is not printable. The self-check prints its values this way.
+// pyStr writes s the way Python's repr does: single quotes unless s holds a single
+// quote and no double quote, and \x, \u or \U for what is not printable.
 func pyStr(s string) string {
 	quote := '\''
 	if strings.ContainsRune(s, '\'') && !strings.ContainsRune(s, '"') {
@@ -41,7 +40,6 @@ func pyStr(s string) string {
 	return b.String()
 }
 
-// pyList is a Python list of strings: ['a', 'b'].
 func pyList(items []string) string {
 	reprs := make([]string, len(items))
 	for i, s := range items {
@@ -50,8 +48,7 @@ func pyList(items []string) string {
 	return "[" + strings.Join(reprs, ", ") + "]"
 }
 
-// pyCounts is a Python dict of counts, keys in the order they first appeared:
-// {'a': 2, 'b': 1}.
+// pyCounts is a Python dict of counts, keys in first-seen order: {'a': 2, 'b': 1}.
 func pyCounts(keys []string) string {
 	var order []string
 	count := map[string]int{}

@@ -11,8 +11,7 @@ import (
 	"golang.org/x/term"
 )
 
-// lightBackground asks the terminal for its background colour with OSC 11.
-// known is false when it does not answer within 150 ms (reap:894-919).
+// lightBackground asks the terminal for its background with OSC 11. known is false if there is no answer in 150 ms.
 func lightBackground() (light, known bool) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
@@ -28,9 +27,8 @@ func lightBackground() (light, known bool) {
 	if _, err := tty.WriteString("\x1b]11;?\x1b\\"); err != nil {
 		return false, false
 	}
-	// A local terminal answers in a few ms. The reply is read byte by byte so
-	// that typeahead after it stays unread. Fd put the file in blocking mode,
-	// so a read deadline would not work; poll waits instead.
+	// The reply is read byte by byte so typeahead after it stays unread. Fd put the
+	// file in blocking mode, so a read deadline would not work and poll waits instead.
 	end := time.Now().Add(150 * time.Millisecond)
 	var reply []byte
 	b := make([]byte, 1)

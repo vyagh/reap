@@ -9,9 +9,8 @@ import (
 	"path/filepath"
 )
 
-// lockLive reports whether Codex still has the chat open. This system has no
-// lock probe, so a lock file that exists counts as running and only a missing
-// file means it is not.
+// lockLive reports whether Codex has the chat open. There is no lock probe here,
+// so a lock file that exists counts as running.
 func lockLive(codexHome, id string) bool {
 	_, err := os.Stat(filepath.Join(codexHome, "thread-writer-locks", id+".lock"))
 	return !errors.Is(err, fs.ErrNotExist)

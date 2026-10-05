@@ -20,24 +20,20 @@ const (
 	wholeFile = -1    // lastCwd limit: search back to the first line
 )
 
-// skipPrefixes start the boilerplate turns Codex writes before the user's
-// first real prompt (reap:60).
+// skipPrefixes start the boilerplate turns Codex writes before the first prompt.
 var skipPrefixes = []string{"<", "#", "This session is being continued"}
 
-// meta is what the first line of a rollout says about its chat.
 type meta struct {
 	ID           string
 	Cwd          string
 	ThreadSource string
 }
 
-// block is one piece of a message's content.
 type block struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
 
-// message is a response_item record: one turn of the conversation.
 type message struct {
 	Type    string `json:"type"`
 	Payload struct {
@@ -47,7 +43,6 @@ type message struct {
 	} `json:"payload"`
 }
 
-// collapse turns every run of whitespace into one space and trims the ends.
 func collapse(s string) string {
 	return strings.Join(strings.FieldsFunc(s, chat.IsSpace), " ")
 }
@@ -61,8 +56,7 @@ func skipped(text string) bool {
 	return false
 }
 
-// eachLine calls fn with every line of the file until fn returns false. It
-// returns the error that stopped the read, nil at the end of the file.
+// eachLine calls fn with each line until fn returns false.
 func eachLine(path string, fn func(line []byte) bool) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -96,8 +90,8 @@ func textOf(blocks []block, kinds ...string) []string {
 	return parts
 }
 
-// peek returns up to maxTurns turns of a rollout: user and assistant messages,
-// whitespace collapsed. A user turn that is boilerplate is left out (reap:354-374).
+// peek returns up to maxTurns user and assistant messages, whitespace collapsed.
+// Boilerplate user turns are left out.
 func peek(path string, maxTurns int) ([]chat.Turn, error) {
 	var out []chat.Turn
 	err := eachLine(path, func(line []byte) bool {
@@ -129,8 +123,7 @@ func peek(path string, maxTurns int) ([]chat.Turn, error) {
 	return out, err
 }
 
-// readMeta reads the first line of a rollout. ok is false when that line is
-// not a session_meta record with an id (reap:376-386).
+// readMeta reads the first line of a rollout. ok is false unless it is a session_meta with an id.
 func readMeta(path string) (m meta, ok bool) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -155,14 +148,13 @@ func readMeta(path string) (m meta, ok bool) {
 	return meta(rec.Payload), true
 }
 
-// lastCwd is the folder of the newest turn_context record. Codex resumes a
-// chat where it was last used, which can differ from the folder in the first
-// line. It reads backwards from the end, at most limit bytes (wholeFile for no
-// limit), and gives "" when it finds no folder (reap:388-406).
+// lastCwd is the folder of the newest turn_context record. Codex resumes a chat
+// where it was last used, which can differ from the folder in the first line. It
+// reads backwards, at most limit bytes (wholeFile for no limit).
 //
-// reap:396-404: the first line of each chunk is held back as a possible
-// fragment, and at the last chunk it is dropped unless the chunk starts at byte
-// 0. So a line that starts exactly at the limit is not seen.
+// The first line of each chunk is held back as a possible fragment and dropped at
+// the last chunk unless that chunk starts at byte 0, as 0.5.0 does. So a line that
+// starts exactly at the limit is not seen.
 func lastCwd(path string, limit int64) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -210,9 +202,8 @@ func lastCwd(path string, limit int64) string {
 	return ""
 }
 
-// scan returns the first real user prompt of a rollout ("" if none) and how
-// many real prompts the first 400 lines hold. A file that cannot be read gives
-// what was read before the failure (reap:408-428).
+// scan returns the first real user prompt of a rollout and how many real prompts
+// the first 400 lines hold. A read that fails gives what was read before it.
 func scan(path string) (title string, n int) {
 	i := 0
 	eachLine(path, func(line []byte) bool {
@@ -240,8 +231,7 @@ func scan(path string) (title string, n int) {
 	return title, n
 }
 
-// readTitles maps a chat id to its name in session_index.jsonl. When an id
-// appears more than once the last line wins (reap:430-440).
+// readTitles maps a chat id to its name in session_index.jsonl. The last line for an id wins.
 func readTitles(codexHome string) map[string]string {
 	titles := map[string]string{}
 	eachLine(filepath.Join(codexHome, "session_index.jsonl"), func(line []byte) bool {
@@ -257,9 +247,8 @@ func readTitles(codexHome string) map[string]string {
 	return titles
 }
 
-// rollouts lists the rollout files under sessions/<year>/<month>/<day>.
-// archived_sessions is not looked at, and neither are names that start with a
-// dot (reap:442-443, 473).
+// rollouts lists the rollout files under sessions/<year>/<month>/<day>. Names
+// that start with a dot are skipped.
 func rollouts(codexHome string) ([]string, error) {
 	all, err := filepath.Glob(filepath.Join(codexHome, "sessions", "*", "*", "*", "*.jsonl"))
 	if err != nil {
@@ -274,8 +263,7 @@ func rollouts(codexHome string) ([]string, error) {
 	return out, nil
 }
 
-// dotted reports whether the year, month, day or file part of a rollout path
-// starts with a dot, which Python's glob does not match.
+// dotted reports whether a part of a rollout path starts with a dot, which 0.5.0 does not match.
 func dotted(path string) bool {
 	parts := strings.Split(filepath.ToSlash(path), "/")
 	for _, p := range parts[len(parts)-4:] {

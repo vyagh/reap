@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	rule, bar = "─", "▌" // frame and mark glyphs (reap:62)
+	rule, bar = "─", "▌" // frame and mark glyphs
 	labelMax  = 72       // longest title drawn; a wide terminal must not turn titles into paragraphs
 	projMax   = 46       // longest project name in a group header
 	listW     = 78       // the list keeps this width; the rest of a wide terminal is the side panel
@@ -27,17 +27,10 @@ var (
 	sortMark = map[string]string{"newest": "date ↓", "oldest": "date ↑", "biggest": "size ↓", "smallest": "size ↑"}
 )
 
-// A feature file fills its slot from an init function in that file.
-//
-//	func init() {
-//		keys["d"] = (*ui).askDelete
-//	}
-//
-// A handler for a key that also does something in the trash view checks
-// u.trashing itself. Enter and the keys in inTrashIgnored never reach one
-// there.
+// Each feature file fills its slot from an init function. A handler for a key that
+// also does something in the trash view checks u.trashing itself. Enter and the
+// keys in inTrashIgnored never reach one there.
 var (
-	// keys is what each key does when the user is not typing a filter.
 	keys = map[string]func(*ui){
 		"j": (*ui).down, "Down": (*ui).down,
 		"k": (*ui).up, "Up": (*ui).up,
@@ -53,37 +46,28 @@ var (
 		"h": (*ui).hide, ".": (*ui).toggleHidden,
 		"?": (*ui).help,
 	}
-	// filterKey takes every key while u.filtering is set.
-	filterKey func(u *ui, k string)
-	// mouseEvent takes every mouse event.
+	filterKey  func(u *ui, k string)
 	mouseEvent func(u *ui, ev *tcell.EventMouse)
-	// detail draws the side panel for the item under the cursor, when the
-	// terminal is wide enough, and returns the title that goes on the
-	// panel's top edge ("" for none).
+	// detail draws the side panel when the terminal is wide enough and returns the title for its top edge, or "".
 	detail func(u *ui, it item) (title string, style tcell.Style)
-	// afterRun runs once the screen is closed, to start the chat that
-	// u.launch names.
+	// afterRun starts u.launch once the screen is closed.
 	afterRun func(u *ui) error
 )
 
-// inTrashIgnored are the keys that do nothing in the trash view (reap:1517).
 var inTrashIgnored = []string{"d", "u", "h", ".", "s"}
 
-// message is the line on the bottom edge: green when ok, yellow when not.
 type message struct {
 	text string
 	ok   bool
 }
 
-// launch is the chat Enter opened: the command and the folder to run it in.
 type launch struct {
 	argv []string
 	dir  string
 }
 
-// ui is the whole state of the screen: what Python's run_ui keeps in its
-// locals (reap:926-1015), one field each. The trash view is a second ui, as
-// Python runs main again for it.
+// ui is the state of the screen, what run_ui in 0.5.0 keeps in its locals. The
+// trash view is a second ui, as 0.5.0 runs main again for it.
 type ui struct {
 	s     tcell.Screen
 	pal   palette
@@ -91,27 +75,27 @@ type ui struct {
 
 	load     func(full bool) ([]chat.Chat, error) // loads the chats the view lists
 	grouped  bool                                 // grouped by project, else one flat list
-	trashing bool                                 // this view is the trash browser
-	home     string                               // project folder the cursor lands on in the first frame, then ""
+	trashing bool
+	home     string // project folder the cursor lands on in the first frame, then ""
 
-	chats    []chat.Chat           // everything load returned
-	by       map[string]*chat.Chat // id -> the chat in chats
+	chats    []chat.Chat
+	by       map[string]*chat.Chat // id -> chat
 	loadedAt time.Time             // when chats was loaded; ages are counted from here
 	keep     map[string]float64    // hidden chat id -> epoch hidden, refreshed on reload
 	showKept bool                  // hidden chats are shown (starts false on every launch)
 
 	picked    map[string]bool // ids picked with space
 	cur, top  int             // cursor item and first drawn item
-	flt       string          // filter text
-	filtering bool            // the user is typing the filter
-	msg       message         // shown on the bottom edge until the next key
-	sortMode  string          // one of sorts
+	flt       string
+	filtering bool
+	msg       message // bottom edge, until the next key
+	sortMode  string
 	undo      [][]chat.Entry  // this session's deletes, one list of trash entries each
 	folded    map[string]bool // collapsed project groups
 	focus     string          // id the cursor lands on after a view change
-	changed   bool            // a trash pass altered the trash
-	restored  []chat.Chat     // trash chats put back, in order
-	tip       bool            // show the pin tip until the next key that is not a tab switch
+	changed   bool
+	restored  []chat.Chat
+	tip       bool // show the pin tip until the next key that is not a tab switch
 
 	trashCount int                   // trash entries, for the "trash" label
 	trashSize  int64                 // bytes they hold
@@ -127,9 +111,9 @@ type ui struct {
 	pinned      string         // the tab reap opens on, "" for none
 
 	launch *launch // set by Enter; afterRun starts it
-	quit   bool    // leave the loop
+	quit   bool
 
-	f frame // what the last plan worked out from the state above
+	f frame
 }
 
 // Run shows the full-screen view until the user quits.
@@ -160,8 +144,7 @@ func isTerminal(x any) bool {
 	return ok && term.IsTerminal(int(f.Fd()))
 }
 
-// newUI is the start of Python's main (reap:928-1015): the state with its
-// chats loaded and the tab chosen.
+// newUI is the start of main in 0.5.0.
 func newUI(s tcell.Screen, pal palette, start cli.Start, load func(bool) ([]chat.Chat, error), grouped, trashing bool, home string) (*ui, error) {
 	u := &ui{
 		s: s, pal: pal, start: start,
@@ -186,8 +169,6 @@ func newUI(s tcell.Screen, pal palette, start cli.Start, load func(bool) ([]chat
 	return u, nil
 }
 
-// reload loads the chats again, after anything that changed the trash or a
-// hide (reap:1022-1029).
 func (u *ui) reload() error {
 	chats, err := u.load(false)
 	if err != nil {
@@ -217,9 +198,9 @@ func (u *ui) reload() error {
 	return nil
 }
 
-// tabList is the installed agents in tab order, with "all" in front once
-// there is more than one. An agent with a data folder gets a tab even at
-// 0 chats. One agent gets no tabs at all (reap:1005-1011).
+// tabList is the installed agents in tab order, with "all" in front once there
+// are two. An agent with a data folder gets a tab even at 0 chats. One agent gets
+// no tabs at all.
 func (u *ui) tabList() []string {
 	var tabs []string
 	for _, a := range u.start.Agents {
@@ -234,7 +215,6 @@ func (u *ui) tabList() []string {
 	return tabs
 }
 
-// run draws and reads keys until the user leaves.
 func (u *ui) run() {
 	for !u.quit {
 		u.plan()
@@ -244,9 +224,8 @@ func (u *ui) run() {
 	}
 }
 
-// step waits for one event and acts on it. While the cursor rests on a chat
-// whose prompt count is not known yet it waits only 250 ms, then reads the
-// count and draws again (reap:1490-1497).
+// step waits for one event and acts on it. While the cursor rests on a chat whose
+// prompt count is unknown it waits only 250 ms, then reads the count and redraws.
 func (u *ui) step() {
 	var rest *chat.Chat
 	if c := u.f.at(u.cur); c != nil && c.Msgs < 0 {
@@ -275,8 +254,7 @@ func (u *ui) step() {
 	}
 }
 
-// count reads a whole chat for its prompt count, which the list only
-// estimates. A chat that cannot be read counts as empty.
+// count reads a whole chat for its prompt count. A chat that cannot be read counts as empty.
 func (u *ui) count(c *chat.Chat) {
 	n, err := u.start.Agents.For(c.Source).Count(*c)
 	if err != nil {
@@ -286,7 +264,6 @@ func (u *ui) count(c *chat.Chat) {
 	u.counts[c.ID] = n
 }
 
-// press is the one key dispatch.
 func (u *ui) press(k string) {
 	if u.filtering {
 		filterKey(u, k)

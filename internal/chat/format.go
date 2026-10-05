@@ -6,9 +6,8 @@ import (
 	"unicode"
 )
 
-// Clean drops control characters (escape, bell, newline, tab and the rest
-// below 0x20, plus 0x7f), so text from a transcript cannot send escape
-// sequences to the terminal when printed (reap:154-158).
+// Clean drops control characters (everything below 0x20, plus 0x7f) so text from
+// a transcript cannot send escape sequences to the terminal.
 func Clean(s string) string {
 	b := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {
@@ -25,8 +24,8 @@ func IsSpace(r rune) bool {
 	return unicode.IsSpace(r) || '\x1c' <= r && r <= '\x1f'
 }
 
-// Human is a byte count the way the list prints it: whole bytes and kilobytes,
-// one decimal for megabytes and gigabytes below 10, whole above (reap:250-256).
+// Human is a byte count as the list prints it: whole bytes and kilobytes, one
+// decimal for megabytes and gigabytes below 10, whole above.
 func Human(n int64) string {
 	f := float64(n)
 	for _, u := range "BKMG" {
@@ -42,7 +41,7 @@ func Human(n int64) string {
 }
 
 // Reltime is how long ago t was, in whole minutes, hours, days or 30-day
-// months. A time in the future counts as now (reap:258-263).
+// months. A time in the future counts as now.
 func Reltime(t, now time.Time) string {
 	d := max(0, now.Sub(t))
 	switch {
@@ -56,12 +55,11 @@ func Reltime(t, now time.Time) string {
 	return fmt.Sprintf("%dmo", d/(30*24*time.Hour))
 }
 
-// Plural is "1 chat" or "3 chats" (reap:791).
+// Plural is "1 chat" or "3 chats".
 func Plural(n int) string {
 	return PluralWord(n, "chat")
 }
 
-// PluralWord is Plural for another word, such as "prompt".
 func PluralWord(n int, word string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, word)
@@ -70,8 +68,8 @@ func PluralWord(n int, word string) string {
 }
 
 // ProjLabel shortens a project name to w characters by cutting its start and
-// putting … there. A w of 1 or less gives … plus the whole name or its tail
-// from the second character on, as Python's negative slice does (reap:788-789).
+// putting … there. A w of 1 or less gives … plus the whole name or its tail from
+// the second character on, as 0.5.0 does with a negative slice.
 func ProjLabel(p string, w int) string {
 	r := []rune(p)
 	if len(r) <= w {
@@ -84,7 +82,6 @@ func ProjLabel(p string, w int) string {
 	return "…" + string(r[start:])
 }
 
-// Fit cuts s to w characters, ending in … when it had to cut (reap:802-804).
 func Fit(s string, w int) string {
 	if w <= 0 {
 		return ""

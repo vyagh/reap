@@ -10,10 +10,9 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// peek reads up to limit turns of a transcript, in file order. With textOnly,
-// tool calls and results are left out; otherwise they show as [tool: NAME]
-// and [tool result]. A transcript that cannot be opened gives the error; one
-// that fails part way gives the turns read so far and the error (reap:325-352).
+// peek reads up to limit turns of a transcript, in file order. Without textOnly,
+// tool calls and results show as [tool: NAME] and [tool result]. A transcript
+// that fails part way gives the turns read so far and the error.
 func peek(path string, limit int, textOnly bool) ([]chat.Turn, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -39,9 +38,8 @@ func peek(path string, limit int, textOnly bool) ([]chat.Turn, error) {
 	}
 }
 
-// turnOf is the turn one transcript line holds, if any. Meta records and the
-// command, caveat and reminder text Claude Code writes in the user's name are
-// not turns.
+// turnOf is the turn a transcript line holds, if any. Meta records and the text
+// Claude Code writes in the user's name (commands, caveats, reminders) are not turns.
 func turnOf(line []byte, textOnly bool) (chat.Turn, bool) {
 	var o map[string]any
 	if json.Unmarshal(line, &o) != nil {
@@ -73,8 +71,6 @@ func turnOf(line []byte, textOnly bool) (chat.Turn, bool) {
 	return chat.Turn{Who: who, Text: chat.Clean(squeeze(text))}, true
 }
 
-// blockParts is the text of each block of a content list, and a marker for
-// each tool block unless textOnly.
 func blockParts(blocks []any, textOnly bool) []string {
 	var parts []string
 	for _, b := range blocks {

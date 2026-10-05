@@ -9,7 +9,6 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// removal is one planned delete: a chat, or an orphan sidecar folder.
 type removal struct {
 	chat   chat.Chat
 	orphan string // path of the orphan folder, "" for a chat
@@ -139,8 +138,8 @@ func cmdRm(env Env, agents chat.Agents, args []string) int {
 	return 0
 }
 
-// matches are the chats whose id starts with tok. Claude chats come first.
-// A Claude chat is matched on its file name, so tok may end in .jsonl.
+// matches are the chats whose id starts with tok, Claude chats first. A Claude chat
+// matches on its file name, so tok may end in .jsonl.
 func matches(chats []chat.Chat, tok string) []chat.Chat {
 	var hits []chat.Chat
 	for _, c := range chats {
@@ -164,7 +163,6 @@ func chatIDs(chats []chat.Chat) []string {
 	return ids
 }
 
-// describe is what a dry-run or an apply names for one removal.
 func describe(env Env, agents chat.Agents, r removal) string {
 	if r.orphan != "" {
 		return fmt.Sprintf("orphan dir %s/%.8s", chat.Pretty(env.Homes, filepath.Dir(r.orphan)), filepath.Base(r.orphan))
@@ -178,7 +176,6 @@ func describe(env Env, agents chat.Agents, r removal) string {
 	return fmt.Sprintf("%.8s (%s)", r.chat.ID, strings.Join(kinds, ", "))
 }
 
-// remove trashes the item, or deletes it for good when hard is set.
 func remove(env Env, agents chat.Agents, r removal, hard bool) error {
 	if r.orphan != "" {
 		if hard {
@@ -200,16 +197,15 @@ func remove(env Env, agents chat.Agents, r removal, hard bool) error {
 	return err
 }
 
-// removeFolder deletes a folder and ignores failures, but leaves a link alone,
-// as Python's rmtree refuses one (reap:1864).
+// removeFolder ignores failures and leaves a link alone, as 0.5.0's rmtree does.
 func removeFolder(path string) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink == 0 {
 		os.RemoveAll(path)
 	}
 }
 
-// orphanDirs are the folders in a project that have no transcript of the same
-// name. memory is Claude's own and is never an orphan (reap:1826-1830).
+// orphanDirs are the folders in a project with no transcript of the same name.
+// memory is Claude's own, never an orphan.
 func orphanDirs(dir string) []string {
 	entries, _ := os.ReadDir(dir)
 	transcripts := map[string]bool{}

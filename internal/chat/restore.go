@@ -8,16 +8,14 @@ import (
 	"strings"
 )
 
-// MoveBack puts the files of a trash entry back where they came from. A file
-// goes back only if its stored name is a plain name inside the entry, its
-// original path lies under one of roots (the folders reap owns, such as
-// projects/ or file-history/), the stored copy is still there, and nothing
-// exists at the original path. Missing folders on the way are made.
+// MoveBack puts the files of a trash entry back. A file goes back only if its
+// stored name is a plain name inside the entry, its original path lies under one
+// of roots (the folders reap owns, such as projects/), the stored copy is still
+// there and nothing exists at the original path.
 //
-// It goes through every file and returns the original paths of those that did
-// not go back, and an error saying why for each. A file that did not go back
-// stays in the entry. MoveBack never removes the entry: its caller does that
-// once left is empty (reap:690-711).
+// It tries every file and returns the original paths of those that did not go
+// back, with an error for each. Those stay in the entry. The caller removes the
+// entry once left is empty.
 func MoveBack(e Entry, roots []string) (left []string, err error) {
 	resolved := make([]string, len(roots))
 	for i, r := range roots {
@@ -33,9 +31,9 @@ func MoveBack(e Entry, roots []string) (left []string, err error) {
 	return left, errors.Join(failures...)
 }
 
-// moveOneBack moves dir/base to src. Python lets "", "." and ".." pass the
-// plain-name test, which would move the entry folder or the whole trash
-// (reap:701-702); here they are refused.
+// moveOneBack moves dir/base to src. 0.5.0 lets "", "." and ".." pass the
+// plain-name test, which would move the entry folder or the whole trash. They are
+// refused here.
 func moveOneBack(dir, src, base string, roots []string) error {
 	if base == "" || base == "." || base == ".." || base != filepath.Base(base) {
 		return fmt.Errorf("%s: the stored name %q is not a plain file name", src, base)
@@ -59,7 +57,6 @@ func moveOneBack(dir, src, base string, roots []string) error {
 	return nil
 }
 
-// under reports whether path is one of roots or inside one.
 func under(path string, roots []string) bool {
 	for _, r := range roots {
 		if path == r || strings.HasPrefix(path, r+string(filepath.Separator)) {
@@ -69,9 +66,8 @@ func under(path string, roots []string) bool {
 	return false
 }
 
-// realPath is the path with symlinks resolved as far as it exists. Python's
-// os.path.realpath does the same, and a restore target usually does not exist
-// yet, which filepath.EvalSymlinks refuses.
+// realPath is the path with symlinks resolved as far as it exists. A restore
+// target usually does not exist yet, which filepath.EvalSymlinks refuses.
 func realPath(path string) string {
 	path, err := filepath.Abs(path)
 	if err != nil {

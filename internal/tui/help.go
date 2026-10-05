@@ -6,8 +6,6 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// helpLine is one line of the key list: a heading (H), a footnote (D) or
-// plain text.
 type helpLine struct{ tag, text string }
 
 var helpLines = []helpLine{
@@ -44,7 +42,6 @@ var helpLines = []helpLine{
 	{"D", "delete moves the chat to a trash, recoverable for 7 days. hide only hides it."},
 }
 
-// help shows the key list over the screen until any key is pressed.
 func (u *ui) help() {
 	u.s.Clear()
 	w, h := u.s.Size()

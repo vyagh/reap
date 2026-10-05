@@ -9,13 +9,11 @@ import (
 	"time"
 )
 
-// codexTimeout is how long one codex call may run. A call that takes longer is
-// stopped and counts as failed (reap:611-622).
+// codexTimeout is how long one codex call may run before it is stopped and fails.
 var codexTimeout = 30 * time.Second
 
-// runCodex runs `codex args...` with no input and its output captured. It
-// returns nil when codex exits 0. Otherwise the error is the first line codex
-// wrote to stderr, else to stdout, as Python shows it.
+// runCodex runs `codex args...`. A failure is reported as the first line codex
+// wrote to stderr, else to stdout, as 0.5.0 shows it.
 func runCodex(args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), codexTimeout)
 	defer cancel()

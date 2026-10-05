@@ -8,8 +8,6 @@ import (
 	"syscall"
 )
 
-// start replaces reap with the agent, so the agent owns the terminal
-// (reap:628-637).
 func start(l launch) error {
 	path, err := exec.LookPath(l.argv[0])
 	if err != nil {

@@ -11,8 +11,8 @@ import (
 
 var _ chat.Agent = (*Agent)(nil)
 
-// chatPaths are the files of a chat. A chat with no project folder has none: its
-// paths would be relative to wherever reap runs.
+// chatPaths are the files of a chat. A chat with no project folder has none, as
+// its paths would be relative to wherever reap runs.
 func (a *Agent) chatPaths(c chat.Chat) ([]string, error) {
 	if c.Dir == "" {
 		return nil, fmt.Errorf("chat %s has no project folder", c.ID)
@@ -20,10 +20,10 @@ func (a *Agent) chatPaths(c chat.Chat) ([]string, error) {
 	return artifacts(a.home, c.Dir, c.ID)
 }
 
-// Trash moves everything that belongs to the chat into a trash entry (reap:607-609).
-// If any step fails the files are put back, or the error says where they stay.
-// A job state file that cannot be read stops it before anything moves; Python
-// stops there with a traceback.
+// Trash moves everything that belongs to the chat into a trash entry. If a step
+// fails the files are put back, or the error says where they stay. A job state
+// file that cannot be read stops it before anything moves, where 0.5.0 stops with
+// a traceback.
 func (a *Agent) Trash(c chat.Chat) (chat.Entry, error) {
 	paths, err := a.chatPaths(c)
 	if err != nil {
@@ -37,9 +37,9 @@ func (a *Agent) Trash(c chat.Chat) (chat.Entry, error) {
 }
 
 // Delete removes everything that belongs to the chat for good, then the project
-// folder if that leaves it bare (reap:572-575). A path that cannot be removed is
-// an error naming it; Python skips it and reports success. Nothing is
-// removed if the job folders cannot be read.
+// folder if that leaves it bare. A path that cannot be removed is an error naming
+// it, where 0.5.0 skips it and reports success. Nothing is removed if the job
+// folders cannot be read.
 func (a *Agent) Delete(c chat.Chat) error {
 	paths, err := a.chatPaths(c)
 	if err != nil {
@@ -55,9 +55,8 @@ func (a *Agent) Delete(c chat.Chat) error {
 	return errors.Join(failures...)
 }
 
-// Restore puts the files of the entry back and removes the entry. If any file
-// cannot go back, the entry stays with those files in it and the error says
-// which and why (Python drops the entry and the files, reap:702-710).
+// Restore puts the files of the entry back and removes the entry. A file that
+// cannot go back stays in the entry and the error says which and why.
 func (a *Agent) Restore(e chat.Entry) error {
 	roots := []string{a.projects()}
 	for _, sub := range []string{"jobs", "file-history", "session-env", "tasks"} {
@@ -71,8 +70,7 @@ func (a *Agent) Restore(e chat.Entry) error {
 }
 
 // Purge removes the entry and what it holds for good, then the chat's project
-// folder if that leaves it bare (reap:681-688). If the entry cannot be removed
-// the error names what failed.
+// folder if that leaves it bare.
 func (a *Agent) Purge(e chat.Entry) error {
 	if err := os.RemoveAll(e.Dir); err != nil {
 		return fmt.Errorf("not purged: %w", err)
@@ -81,9 +79,8 @@ func (a *Agent) Purge(e chat.Entry) error {
 	return nil
 }
 
-// dropBareProj removes a project folder that holds nothing, or nothing but an
-// empty memory folder, which Claude Code makes again. Any file inside keeps it
-// (reap:577-587).
+// dropBareProj removes a project folder that holds nothing, or only an empty
+// memory folder, which Claude Code makes again.
 func dropBareProj(h chat.Homes, dir string) {
 	if dir == "" || !chat.UnderProj(h, dir) {
 		return
@@ -102,8 +99,7 @@ func dropBareProj(h chat.Homes, dir string) {
 	rmdir(dir)
 }
 
-// rmdir removes an empty folder. Unlike os.Remove it never removes a file or a
-// link, as Python's os.rmdir does not.
+// rmdir is os.Remove for folders only, as os.rmdir in 0.5.0 is.
 func rmdir(path string) bool {
 	fi, err := os.Lstat(path)
 	return err == nil && fi.IsDir() && os.Remove(path) == nil

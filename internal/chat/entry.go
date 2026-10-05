@@ -10,28 +10,28 @@ import (
 	"time"
 )
 
-// TrashDays is how long a trashed chat stays recoverable before the prune removes it.
+// TrashDays is how long a trashed chat waits before the prune removes it.
 const TrashDays = 7
 
 // Entry is one trashed chat: a folder under the trash with its record file.
 type Entry struct {
-	Dir    string // the entry folder
+	Dir    string
 	Record Record // reap-meta.json
-	Path   string // the trashed transcript, "" if there is none (reap:749-754)
+	Path   string // the trashed transcript, "" if there is none
 	Size   int64  // bytes the entry holds; for a Codex CLI entry, the archived file
 	Proj   string // from the record, "~" if it names no folder; "" for an old record the caller must resolve
 	Cwd    string // from the record, "" if not known; an old record's cwd is for the caller to find
 }
 
-// codexArchived reports a Codex entry that moved no files, so its chat lives
-// on in Codex's own archive (reap:735, 750).
+// codexArchived reports a Codex entry that moved no files: its chat lives on in
+// Codex's own archive.
 func (r Record) codexArchived() bool {
 	return r.Src == string(Codex) && len(r.Moved) == 0
 }
 
-// ReadEntry reads the trash entry in dir. It returns ErrNoRecord when dir has
-// no usable reap-meta.json. It does not guess a project or cwd that an old
-// record lacks, since that needs Claude's transcript reader (reap:713-718, 732-734).
+// ReadEntry reads the trash entry in dir. It returns ErrNoRecord when dir has no
+// usable reap-meta.json. A project or cwd an old record lacks is left for the
+// caller, since finding it needs Claude's transcript reader.
 func ReadEntry(dir string) (Entry, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "reap-meta.json"))
 	if errors.Is(err, fs.ErrNotExist) {
@@ -70,9 +70,8 @@ func ReadEntry(dir string) (Entry, error) {
 	return e, nil
 }
 
-// DirSize is the bytes of every file under dir, 0 if dir is not a folder.
-// Links to folders are not followed, links to files count what they point at
-// (reap:242-248).
+// DirSize is the bytes of every file under dir, 0 if dir is not a folder. Links to
+// folders are not followed, links to files count what they point at.
 func DirSize(dir string) int64 {
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		return 0
@@ -94,9 +93,8 @@ func DirSize(dir string) int64 {
 	return total
 }
 
-// Chat shows the entry as a chat, so the list's renderer can draw it. The age
-// counts from the deletion, the prompt count is not known, and the chat is
-// never live (reap:756-765).
+// Chat shows the entry as a chat so the list can draw it. The age counts from the
+// deletion, the prompt count is unknown and the chat is never live.
 func (e Entry) Chat() Chat {
 	src := Source(e.Record.Src)
 	if src == "" {
@@ -123,10 +121,9 @@ func (e Entry) Chat() Chat {
 	}
 }
 
-// DaysLeft is how many days an entry stays recoverable: 7 minus the whole days
-// since the deletion, never below 0. The elapsed days truncate toward zero, so
-// an at in the future gives 7 for up to a day ahead and 8 from a day ahead
-// (reap:201-202).
+// DaysLeft is 7 minus the whole days since the deletion, never below 0. The
+// elapsed days truncate toward zero, so an at in the future gives 7 for up to a
+// day ahead and 8 from a day ahead.
 func DaysLeft(at, now time.Time) int {
 	elapsed := int(now.Sub(at).Seconds() / 86400)
 	return max(0, TrashDays-elapsed)

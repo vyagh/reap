@@ -10,11 +10,10 @@ import (
 	"syscall"
 )
 
-// lockLive reports whether Codex still has the chat open. Codex holds a lock
-// on thread-writer-locks/<id>.lock while it writes, so a lock that someone else
-// holds means the chat is running. Only a missing lock file means it is not:
-// a file that is there but cannot be opened, or a probe that fails for any
-// reason, counts as running (reap:445-462).
+// lockLive reports whether Codex has the chat open. Codex holds a lock on
+// thread-writer-locks/<id>.lock while it writes, so a lock someone else holds
+// means the chat is running. Only a missing lock file means it is not: a file
+// that cannot be opened, or a probe that fails, counts as running.
 func lockLive(codexHome, id string) bool {
 	f, err := os.OpenFile(filepath.Join(codexHome, "thread-writer-locks", id+".lock"), os.O_RDWR, 0)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -27,7 +26,6 @@ func lockLive(codexHome, id string) bool {
 	return flockHeld(f) || fcntlHeld(f)
 }
 
-// flockHeld takes the lock without waiting and gives it back at once.
 func flockHeld(f *os.File) bool {
 	fd := int(f.Fd())
 	if syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB) != nil {
@@ -36,8 +34,8 @@ func flockHeld(f *os.File) bool {
 	return syscall.Flock(fd, syscall.LOCK_UN) != nil
 }
 
-// fcntlHeld does the same with a POSIX record lock, the kind Python calls
-// lockf. The two kinds do not see each other, so both are probed.
+// fcntlHeld probes a POSIX record lock, the kind Python calls lockf. It and
+// flock do not see each other, so both are probed.
 func fcntlHeld(f *os.File) bool {
 	fd := f.Fd()
 	lk := syscall.Flock_t{Type: syscall.F_WRLCK}

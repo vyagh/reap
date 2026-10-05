@@ -10,16 +10,12 @@ func init() {
 	mouseEvent = (*ui).mouse
 }
 
-// wheelStep is how many lines one turn of the wheel moves the cursor (reap:1582).
 const wheelStep = 3
 
-// mouse is one press of the left button or one turn of the wheel (reap:1571-1583).
-// A press on a tab opens it, a press on a chat puts the cursor there and a
-// press on a group header folds or opens the group. The wheel moves the
-// cursor three chats. A press in the side panel, on a divider or on the
-// gap does nothing. The trash view acts the same. While the filter is being
-// typed any mouse event only sends the cursor back to the top, as any key
-// does there (reap:1500-1505).
+// mouse handles one press of the left button or one turn of the wheel. The wheel
+// moves the cursor three chats. A press in the side panel, on a divider or on a
+// gap does nothing. While the filter is typed any mouse event only sends the
+// cursor to the top, as any key does there.
 func (u *ui) mouse(ev *tcell.EventMouse) {
 	if u.filtering {
 		u.cur, u.top = 0, 0
@@ -36,7 +32,6 @@ func (u *ui) mouse(ev *tcell.EventMouse) {
 	}
 }
 
-// click acts on a press at column x, row y of the list screen.
 func (u *ui) click(x, y int) {
 	if y == 0 {
 		for _, s := range u.f.tabSpans {

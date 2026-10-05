@@ -16,13 +16,11 @@ func init() {
 }
 
 const (
-	paneTurns = 16 // messages read for the panel (reap:1374)
-	paneLines = 5  // lines drawn of one message (reap:1381)
+	paneTurns = 16 // messages read for the panel
+	paneLines = 5  // lines drawn of one message
 )
 
-// drawPane draws the side panel for the item under the cursor (reap:1326-1391):
-// a folded group's totals, or a chat's folder, state, size and the start of
-// its messages. It returns the title for the panel's top edge.
+// drawPane draws the side panel for the item under the cursor and returns the title for its top edge.
 func (u *ui) drawPane(it item) (string, tcell.Style) {
 	f := &u.f
 	pw := f.w - f.px - 2
@@ -88,9 +86,7 @@ func (u *ui) drawPane(it item) (string, tcell.Style) {
 	return title, tstyle
 }
 
-// paneTurns draws the first messages of a chat from row 6, each as a name and
-// up to five lines under it. The read happens once per chat, so holding j
-// stays smooth.
+// paneTurns draws the first messages of a chat from row 6. The read happens once per chat, so holding j stays smooth.
 func (u *ui) paneTurns(c *chat.Chat, pw int) {
 	f, p := &u.f, &u.pal
 	turns, ok := u.previews[c.ID]
@@ -127,8 +123,6 @@ func (u *ui) paneTurns(c *chat.Chat, pw int) {
 	}
 }
 
-// paneField draws a dim name with its value beside it, wrapped under itself,
-// and returns the row after the value.
 func (u *ui) paneField(y int, name, value string) int {
 	f := &u.f
 	u.add(y, f.px, name, u.pal.dim)
@@ -149,18 +143,15 @@ func joinPath(parent, leaf string) string {
 	return parent + "/" + leaf
 }
 
-// epoch is a time kept as seconds since 1970, the way the state file has it.
 func epoch(sec float64) time.Time {
 	whole := int64(sec)
 	return time.Unix(whole, int64((sec-float64(whole))*1e9))
 }
 
-// dayOf is a date as the panel prints it, in the local zone.
 func dayOf(t time.Time) string { return t.Format("Jan 02") }
 
-// wrapText breaks text into lines of at most width characters, as Python's
-// textwrap.wrap does with its defaults: it breaks at spaces and after a
-// hyphen inside a word, and cuts a word that is longer than a line.
+// wrapText breaks text into lines of at most width characters as 0.5.0 does with
+// Python's textwrap.wrap and its defaults, cutting a word longer than a line.
 func wrapText(text string, width int) []string {
 	chunks := wrapChunks([]rune(strings.NewReplacer("\t", " ", "\n", " ", "\v", " ", "\f", " ", "\r", " ").Replace(text)))
 	var lines []string
@@ -203,9 +194,9 @@ func wrapText(text string, width int) []string {
 
 func isBlank(s string) bool { return strings.TrimSpace(s) == "" }
 
-// wrapChunks cuts text into runs of spaces and pieces of words. A word breaks
-// after a hyphen that has letters on both sides, and before a run of two or
-// more dashes that follows a word character.
+// wrapChunks cuts text into runs of spaces and pieces of words. A word breaks after
+// a hyphen with letters on both sides, and before a run of two or more dashes
+// that follows a word character.
 func wrapChunks(r []rune) []string {
 	at := func(i int) rune {
 		if i < 0 || i >= len(r) {

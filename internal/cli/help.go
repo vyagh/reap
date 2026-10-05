@@ -6,8 +6,7 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// printHelp is the --help text. It is coloured only on a terminal, and not
-// when NO_COLOR is set.
+// printHelp colours only on a terminal and not when NO_COLOR is set.
 func printHelp(env Env) {
 	on := env.Terminal && env.Getenv("NO_COLOR") == ""
 	paint := func(s, code string) string {

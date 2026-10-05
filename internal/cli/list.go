@@ -6,8 +6,6 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// printStatic is the plain list: one line per chat, with a "# project" line
-// before each group when grouped, then the totals (reap:839-847).
 func printStatic(env Env, chats []chat.Chat, grouped bool) {
 	now := env.Now()
 	var total int64
@@ -32,8 +30,8 @@ func printStatic(env Env, chats []chat.Chat, grouped bool) {
 	fmt.Fprintf(env.Stdout, "\n%d chats - %s total\n", len(chats), chat.Human(total))
 }
 
-// projectArg is the folder argument as resolve_dir takes it: "." means the
-// current folder, which it spells "".
+// projectArg is the folder argument as resolve_dir takes it: "." is the current
+// folder, spelled "".
 func projectArg(proj string) string {
 	if proj == "." {
 		return ""
@@ -76,8 +74,6 @@ func cmdLs(env Env, agents chat.Agents, args []string) int {
 	return 0
 }
 
-// cmdDefault is plain reap: the full-screen view on a terminal, the plain
-// list when piped, and the self-check with --selftest.
 func cmdDefault(env Env, agents chat.Agents, noCLI bool, args []string) int {
 	selftestRun := popFlag(&args, "--selftest")
 	tmp := popFlag(&args, "--tmp")
@@ -126,8 +122,7 @@ func cmdDefault(env Env, agents chat.Agents, noCLI bool, args []string) int {
 	return openScreen(env, agents, noCLI, load, title, grouped)
 }
 
-// openScreen starts the full-screen view. With every project shown it also
-// tells the view which project folder the cursor starts on.
+// openScreen starts the view. With every project shown the cursor starts on the current folder's project.
 func openScreen(env Env, agents chat.Agents, noCLI bool, load func(bool) ([]chat.Chat, error), title string, grouped bool) int {
 	if env.Screen == nil {
 		return die(env, "reap: no full-screen view in this build, pipe the output or use reap ls")

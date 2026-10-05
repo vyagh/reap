@@ -13,8 +13,6 @@ import (
 
 func rlen(s string) int { return utf8.RuneCountInString(s) }
 
-// draw paints the whole screen from the frame (reap:1387-1488): the list
-// with its group headers, the tabs on the top row, the frame, the keys.
 func (u *ui) draw() {
 	f := &u.f
 	u.s.Clear()
@@ -63,8 +61,7 @@ func (u *ui) draw() {
 	u.drawBottom()
 }
 
-// drawHdr draws a project's header. A folded one shows its size after the
-// name, an open one shows it at the right, with the hidden count in front.
+// drawHdr: a folded header shows its size after the name, an open one at the right.
 func (u *ui) drawHdr(y int, it item, sel bool) {
 	f, p := &u.f, &u.pal
 	folded := u.folded[it.proj]
@@ -114,7 +111,6 @@ func (u *ui) drawHdr(y int, it item, sel bool) {
 	}
 }
 
-// drawDivider draws the "hidden" rule above a project's hidden chats.
 func (u *ui) drawDivider(y int) {
 	lx, tx := 2, 16 // the title column, after mark, age and size
 	if u.grouped {
@@ -127,8 +123,6 @@ func (u *ui) drawDivider(y int) {
 	u.add(y, lx, text, u.pal.divider)
 }
 
-// drawRow draws one chat: mark, age, size, title, and in the trash the days
-// left at the right. The cursor row is filled across the list.
 func (u *ui) drawRow(y int, cursor bool, c *chat.Chat) {
 	f, p := &u.f, &u.pal
 	picked := u.picked[c.ID]
@@ -232,8 +226,6 @@ func (u *ui) drawRow(y int, cursor bool, c *chat.Chat) {
 	}
 }
 
-// tabText is a tab's label: its name, a * when it is the pinned one, and its
-// chat count unless bare.
 func (u *ui) tabText(name string, bare bool) string {
 	star := ""
 	if name == u.pinned {
@@ -249,8 +241,7 @@ func (u *ui) tabText(name string, bare bool) string {
 	return fmt.Sprintf(" %s%s %d ", star, name, n)
 }
 
-// stat is one piece of the list's state at the right of the top row. A
-// negative drop never goes; the others go when the row is short, lowest first.
+// stat is a piece of list state on the top row. A negative drop never goes, the others go lowest first when the row is short.
 type stat struct {
 	text  string
 	style tcell.Style
@@ -267,7 +258,6 @@ func statWidth(stats []stat) int {
 	return n
 }
 
-// dropOne removes the stat that goes first and reports whether there was one.
 func dropOne(stats []stat) ([]stat, bool) {
 	best := -1
 	for i, s := range stats {
@@ -281,9 +271,7 @@ func dropOne(stats []stat) ([]stat, bool) {
 	return slices.Delete(stats, best, best+1), true
 }
 
-// drawLabels draws the top row: the tabs, or the project's name, on the left
-// and the list's state on the right. It returns the column spans the frame's
-// top edge opens under (reap:1243-1297).
+// drawLabels draws the top row and returns the column spans the frame's top edge opens under.
 func (u *ui) drawLabels() [][2]int {
 	f, p := &u.f, &u.pal
 	var total, picked int64
@@ -416,8 +404,7 @@ func (u *ui) drawLabels() [][2]int {
 	return opens
 }
 
-// drawFrame draws the rounded frame. A div at or above 0 is the column of a
-// divider, and the top edge opens under each of the gaps.
+// drawFrame draws the rounded frame. A div at or above 0 is the column of a divider.
 func (u *ui) drawFrame(y0, y1, x0, x1, div int, gaps [][2]int) {
 	n := x1 - x0 + 1
 	top, bot := make([]string, n), make([]string, n)
@@ -449,7 +436,6 @@ func (u *ui) drawFrame(y0, y1, x0, x1, div int, gaps [][2]int) {
 	u.put(y1, x0, strings.Join(bot, ""), line)
 }
 
-// box clears a rectangle and draws a frame around it with a title on the top edge.
 func (u *ui) box(y0, x0, hh, ww int, title string, style tcell.Style) {
 	for y := y0 + 1; y < y0+hh-1; y++ {
 		u.add(y, x0, strings.Repeat(" ", ww), tcell.Style{})
@@ -460,7 +446,6 @@ func (u *ui) box(y0, x0, hh, ww int, title string, style tcell.Style) {
 	}
 }
 
-// hint is a key and what it does, as the bottom edge shows them.
 type hint struct{ key, act string }
 
 func hintSpan(pairs []hint) int {
@@ -471,8 +456,7 @@ func hintSpan(pairs []hint) int {
 	return n
 }
 
-// hints draws pairs from column x with the key bold and the action dim, and
-// returns the column after them.
+// hints draws key and action pairs from column x and returns the column after them.
 func (u *ui) hints(y, x int, pairs []hint) int {
 	u.add(y, x-1, strings.Repeat(" ", hintSpan(pairs)+2), tcell.Style{})
 	for _, h := range pairs {
@@ -484,9 +468,7 @@ func (u *ui) hints(y, x int, pairs []hint) int {
 	return x
 }
 
-// drawBottom draws the bottom edge: the filter being typed, else a message,
-// else the keys. Keys shed a few at a time on a narrow terminal, and ?
-// lists them all (reap:1461-1487).
+// drawBottom draws the filter being typed, else a message, else the keys. Keys shed a few at a time on a narrow terminal.
 func (u *ui) drawBottom() {
 	f, p := &u.f, &u.pal
 	y := f.h - 1

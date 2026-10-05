@@ -12,7 +12,6 @@ import (
 
 var _ chat.Agent = (*Agent)(nil)
 
-// rolloutPaths lists the rollout files of one chat under sessions/ (reap:441-442).
 func (a *Agent) rolloutPaths(id string) []string {
 	all, _ := filepath.Glob(filepath.Join(a.h.Codex, "sessions", "*", "*", "*", "*"+id+"*.jsonl"))
 	var out []string
@@ -24,8 +23,7 @@ func (a *Agent) rolloutPaths(id string) []string {
 	return out
 }
 
-// archivedPath is the rollout file `codex archive` left in archived_sessions/
-// for a chat, "" if there is none (reap:660).
+// archivedPath is the rollout `codex archive` left in archived_sessions/, or "".
 func (a *Agent) archivedPath(id string) string {
 	all, _ := filepath.Glob(filepath.Join(a.h.Codex, "archived_sessions", "*"+id+"*.jsonl"))
 	for _, p := range all {
@@ -36,10 +34,9 @@ func (a *Agent) archivedPath(id string) string {
 	return ""
 }
 
-// Trash soft-deletes the chat. Normally codex archives it and the entry only
-// records where the archived file is, since moving a rollout by hand would
-// leave Codex's database pointing at nothing (reap:639-663). With noCLI the
-// rollout file moves into reap's trash instead.
+// Trash has codex archive the chat and records where the archived file is, since
+// moving a rollout by hand would leave Codex's database pointing at nothing. With
+// noCLI the rollout moves into reap's trash instead.
 func (a *Agent) Trash(c chat.Chat) (chat.Entry, error) {
 	rec := chat.Record{UUID: c.ID, Label: c.Label, Proj: c.Proj, Src: string(chat.Codex)}
 	if c.Cwd != "" {
@@ -59,9 +56,9 @@ func (a *Agent) trashFiles(c chat.Chat, rec chat.Record) (chat.Entry, error) {
 	return chat.Move(a.h, c.ID, paths, rec)
 }
 
-// archive runs codex archive and writes an entry for it. If codex archived the
-// chat but no entry could be written, the error says where the chat is and how
-// to get it back, since no entry will show it (reap:657-663).
+// archive runs codex archive and writes an entry for it. If the entry cannot be
+// written the error says where the chat is and how to get it back, since no entry
+// will show it.
 func (a *Agent) archive(c chat.Chat, rec chat.Record) (chat.Entry, error) {
 	if err := runCodex("archive", c.ID); err != nil {
 		return chat.Entry{}, fmt.Errorf("codex archive failed: %w", err)
@@ -76,7 +73,6 @@ func (a *Agent) archive(c chat.Chat, rec chat.Record) (chat.Entry, error) {
 	return e, nil
 }
 
-// Delete trashes the chat, then purges the entry (reap:1863).
 func (a *Agent) Delete(c chat.Chat) error {
 	e, err := a.Trash(c)
 	if err != nil {
@@ -85,10 +81,9 @@ func (a *Agent) Delete(c chat.Chat) error {
 	return a.Purge(e)
 }
 
-// Restore puts a trashed chat back. An entry that holds files (made with
-// noCLI) moves them back to sessions/ and is removed only when every file is
-// back. An entry that holds none is a codex archive, so codex unarchive runs.
-// That is also so under noCLI (reap:666-680).
+// Restore puts a trashed chat back. An entry that holds files (made with noCLI)
+// moves them back to sessions/ and is removed only when every file is back. One
+// that holds none is a codex archive, so codex unarchive runs, under noCLI too.
 func (a *Agent) Restore(e chat.Entry) error {
 	if len(e.Record.Moved) > 0 {
 		return a.restoreFiles(e)
@@ -107,12 +102,10 @@ func (a *Agent) restoreFiles(e chat.Entry) error {
 	return os.RemoveAll(e.Dir)
 }
 
-// Purge removes the entry for good and, for an archive entry, asks codex to
-// delete the archived chat. It skips that call if the chat is back under
-// sessions/ without its archived file, because the user unarchived it by hand
-// (reap:683-686). The entry goes even if codex fails, since a purge is
-// permanent; the error then says the chat is still in Codex's archive
-// (reap:687).
+// Purge removes the entry for good and, for an archive entry, asks codex to delete
+// the archived chat. It skips that call if the chat is back under sessions/
+// without its archived file, since the user unarchived it by hand. The entry goes
+// even if codex fails, and the error says the chat is still in Codex's archive.
 func (a *Agent) Purge(e chat.Entry) error {
 	var cliErr error
 	if !a.noCLI && len(e.Record.Moved) == 0 && !a.unarchivedByHand(e.Record) {

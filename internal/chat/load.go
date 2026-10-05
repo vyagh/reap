@@ -5,11 +5,10 @@ import (
 	"time"
 )
 
-// Load is every agent's chats in the order the list shows them, with Hidden
-// set from keep. With opts.Dir set it is the chats of that one project and
-// they run newest first. Without it, projects run by their newest chat and
-// chats within a project newest first (reap:518-539). Each agent applies
-// opts.Tmp, opts.Subagents and opts.Full itself.
+// Load is every agent's chats in the order the list shows them, with Hidden set
+// from keep. With opts.Dir set it is that one project's chats, newest first.
+// Without it, projects run by their newest chat and chats within a project newest
+// first. Each agent applies opts.Tmp, opts.Subagents and opts.Full itself.
 func Load(agents Agents, keep map[string]float64, opts ListOpts) ([]Chat, error) {
 	var chats []Chat
 	for _, a := range agents {

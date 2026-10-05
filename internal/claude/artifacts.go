@@ -13,10 +13,9 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// resumerJobDirs are the job folders whose state.json names this chat as the
-// one to resume: they would dangle once it is deleted. A state.json that is
-// not valid UTF-8 is an error naming the file; Python stops there with a
-// traceback (reap:541-552).
+// resumerJobDirs are the job folders whose state.json names this chat as the one
+// to resume, which would dangle once it is deleted. A state.json that is not
+// valid UTF-8 is an error naming the file, where 0.5.0 stops with a traceback.
 func resumerJobDirs(h chat.Homes, id string) ([]string, error) {
 	entries, err := os.ReadDir(filepath.Join(h.Claude, "jobs"))
 	if err != nil {
@@ -48,9 +47,9 @@ func resumerJobDirs(h chat.Homes, id string) ([]string, error) {
 }
 
 // artifacts are the paths that make up a chat, whether or not they exist: the
-// transcript, its sidecar folder, the per-session state Claude Code keeps by
-// uuid, its job folder, and every job that resumes it (reap:554-560). On an
-// error from resumerJobDirs it returns the paths it has along with it.
+// transcript, its sidecar folder, the per-session state Claude Code keeps by uuid,
+// its job folder and every job that resumes it. On an error from resumerJobDirs
+// it returns the paths it has with it.
 func artifacts(h chat.Homes, dir, id string) ([]string, error) {
 	arts := []string{filepath.Join(dir, id+".jsonl"), filepath.Join(dir, id)}
 	for _, sub := range []string{"file-history", "session-env", "tasks"} {
@@ -64,7 +63,7 @@ func artifacts(h chat.Homes, dir, id string) ([]string, error) {
 }
 
 // artifactKinds names what a delete would move, once each and only what is on
-// disk: transcript, sidecar, and the folder name of the rest (reap:562-570).
+// disk.
 func artifactKinds(h chat.Homes, dir, id string) []string {
 	paths, _ := artifacts(h, dir, id)
 	kinds := []string{}

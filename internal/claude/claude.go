@@ -8,31 +8,27 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// Agent is Claude Code: chats are the transcripts under <claude home>/projects.
+// Agent is Claude Code. Its chats are the transcripts under <claude home>/projects.
 type Agent struct {
 	home chat.Homes
 }
 
-// New returns the Claude agent for the given folders.
 func New(h chat.Homes) *Agent {
 	return &Agent{home: h}
 }
 
-// Name is the source of the chats this agent lists.
 func (a *Agent) Name() chat.Source {
 	return chat.Claude
 }
 
-// Installed reports whether Claude's projects folder exists (reap:464-466).
 func (a *Agent) Installed() bool {
 	fi, err := os.Stat(a.projects())
 	return err == nil && fi.IsDir()
 }
 
-// List returns the chats of opts.Dir, or of every project folder when it is
-// empty. Live is set from one read of the session files. Projects under the
-// system temp folder are left out unless opts.Tmp is set. A folder that cannot
-// be read has no chats, as in Python, so List does not fail (reap:494-516, 526-533).
+// List returns the chats of opts.Dir, or of every project folder when it is empty.
+// Projects under the system temp folder are left out unless opts.Tmp is set. A
+// folder that cannot be read has no chats, as in 0.5.0, so List does not fail.
 func (a *Agent) List(opts chat.ListOpts) ([]chat.Chat, error) {
 	dirs := []string{opts.Dir}
 	if opts.Dir == "" {
@@ -46,14 +42,13 @@ func (a *Agent) List(opts chat.ListOpts) ([]chat.Chat, error) {
 	return chats, nil
 }
 
-// Live re-reads the session files and reports whether the chat is open. A
-// chat that cannot be told apart from an open one counts as open.
+// Live re-reads the session files. A chat that cannot be told apart from an open
+// one counts as open.
 func (a *Agent) Live(c chat.Chat) bool {
 	return liveSessions(a.home).has(c.ID)
 }
 
-// Exists reports whether some project folder holds a transcript with this id
-// (reap:183).
+// Exists reports whether some project folder holds a transcript with this id.
 func (a *Agent) Exists(id string) bool {
 	entries, _ := os.ReadDir(a.projects())
 	for _, e := range entries {
@@ -67,24 +62,20 @@ func (a *Agent) Exists(id string) bool {
 	return false
 }
 
-// Kinds names what a delete would move: only what is on disk.
 func (a *Agent) Kinds(c chat.Chat) []string {
 	return artifactKinds(a.home, c.Dir, c.ID)
 }
 
-// Peek returns up to limit turns of the transcript at c.Path.
 func (a *Agent) Peek(c chat.Chat, limit int, textOnly bool) ([]chat.Turn, error) {
 	return peek(c.Path, limit, textOnly)
 }
 
-// Count reads the whole transcript at c.Path for its prompt count. A file that
-// cannot be opened is an error with the count 0.
+// Count reads the whole transcript at c.Path. A file that cannot be opened is an error.
 func (a *Agent) Count(c chat.Chat) (int, error) {
 	i, err := meta(c.Path, true)
 	return i.n, err
 }
 
-// ResumeCmd is the command that reopens the chat, and the folder it ran in.
 func (a *Agent) ResumeCmd(c chat.Chat) ([]string, string, error) {
 	return []string{"claude", "--resume", c.ID}, c.Cwd, nil
 }
@@ -93,8 +84,8 @@ func (a *Agent) projects() string {
 	return filepath.Join(a.home.Claude, "projects")
 }
 
-// projectDirs are the project folders, by name. A folder that is a link out of
-// the projects folder is left out, so reap never reads or deletes through it.
+// projectDirs are the project folders, by name. A link out of the projects folder
+// is left out, so reap never reads or deletes through it.
 func (a *Agent) projectDirs(tmp bool) []string {
 	entries, _ := os.ReadDir(a.projects())
 	var dirs []string
@@ -112,8 +103,7 @@ func (a *Agent) projectDirs(tmp bool) []string {
 	return dirs
 }
 
-// listDir is the chats in one project folder. A folder that is not there or
-// cannot be read has none. A transcript that vanishes while it is read is left out.
+// listDir is the chats in one project folder. A transcript that vanishes mid-read is left out.
 func (a *Agent) listDir(dir string, live liveSet, full bool) []chat.Chat {
 	entries, _ := os.ReadDir(dir)
 	var chats []chat.Chat

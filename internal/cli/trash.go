@@ -36,8 +36,7 @@ func cmdTrash(env Env, agents chat.Agents, args []string) int {
 	return 0
 }
 
-// purge removes a trash entry for good. It never fails: the entry is dropped
-// even when the agent could not clean up after it (reap:681-688).
+// purge never fails: the entry is dropped even when the agent could not clean up.
 func purge(agents chat.Agents, e chat.Entry) {
 	if a := agents.For(chat.Source(e.Record.Src)); a != nil {
 		a.Purge(e)
@@ -83,8 +82,7 @@ func cmdRestore(env Env, agents chat.Agents, args []string) int {
 	return 0
 }
 
-// trashed are the entries whose id starts with tok, else those whose label
-// holds tok in any letter case (reap:1902-1904).
+// trashed are the entries whose id starts with tok, else whose label holds tok in any case.
 func trashed(entries []chat.Entry, tok string) []chat.Entry {
 	var hits []chat.Entry
 	for _, e := range entries {
@@ -103,9 +101,8 @@ func trashed(entries []chat.Entry, tok string) []chat.Entry {
 	return hits
 }
 
-// restore puts an entry back and reports whether it worked. The caller reads
-// the entry again just before, so one that an earlier restore in the same
-// command removed counts as failed (reap:697-698).
+// restore reports whether the entry came back. The entry is read again just
+// before, so one an earlier restore in the same command removed counts as failed.
 func restore(agents chat.Agents, e chat.Entry) bool {
 	a := agents.For(chat.Source(e.Record.Src))
 	return a != nil && a.Restore(e) == nil

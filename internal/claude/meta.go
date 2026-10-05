@@ -26,18 +26,16 @@ type info struct {
 	n      int    // prompts counted, -1 unless the whole file was read
 }
 
-// CwdOf reads the working folder out of one transcript, "" if it records none.
 func CwdOf(transcript string) string {
 	i, _ := meta(transcript, false)
 	return i.cwd
 }
 
 // meta reads the title, first prompt and working folder of a transcript. At
-// launch it reads the start (until a prompt and a folder are in) and the
-// last 64 KB, so a title written only in the middle of a long transcript is
-// missed. With full it reads the whole file and counts the prompts by text
-// match: a user record that is neither a tool result nor a meta line. A file
-// that cannot be opened gives nothing and the error (reap:269-323).
+// launch it reads the start (until a prompt and a folder are in) and the last
+// 64 KB, so a title written only in the middle of a long transcript is missed.
+// With full it reads the whole file and counts the prompts by text match: a user
+// record that is neither a tool result nor a meta line.
 func meta(path string, full bool) (info, error) {
 	s := scan{info: info{n: -1}, full: full}
 	if full {
@@ -56,16 +54,15 @@ func meta(path string, full bool) (info, error) {
 	return s.info, nil
 }
 
-// scan is a transcript being read: what has been found and whether a prompt
-// has been taken, which an empty prompt after cleaning still counts as.
+// scan is a transcript being read. A prompt that is empty once cleaned still
+// counts as taken.
 type scan struct {
 	info
 	full      bool
 	hasPrompt bool
 }
 
-// readers hold the 64 KB buffers of the readers that take a whole file or the
-// tail of one, so a listing does not make a new one for every transcript.
+// readers pools the 64 KB buffers so a listing does not make one per transcript.
 var readers = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 64<<10) }}
 
 func (s *scan) readWhole(f *os.File) {
@@ -149,8 +146,8 @@ func (s *scan) readEnds(f *os.File) {
 	}
 }
 
-// feed takes one line. Most lines cannot carry a title, a prompt or a folder,
-// and are rejected on a text match before the slow parse.
+// feed takes one line. Most lines cannot carry a title, a prompt or a folder and
+// are rejected on a text match before the slow parse.
 func (s *scan) feed(line []byte) {
 	isUser := bytes.Contains(line, []byte(`"type":"user"`))
 	if s.full && isUser && !bytes.Contains(line, []byte(`"tool_result"`)) && !bytes.Contains(line, []byte(`"isMeta":true`)) {
@@ -210,7 +207,6 @@ func (s *scan) takePrompt(o map[string]any) {
 	s.hasPrompt = true
 }
 
-// textBlocks joins the text blocks of a content list with one space.
 func textBlocks(blocks []any) string {
 	var texts []string
 	for _, b := range blocks {
@@ -231,7 +227,6 @@ func hasAnyPrefix(s string, prefixes ...string) bool {
 	return false
 }
 
-// squeeze turns every run of whitespace into one space and trims the ends.
 func squeeze(s string) string {
 	return strings.Join(strings.FieldsFunc(s, chat.IsSpace), " ")
 }

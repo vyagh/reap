@@ -14,14 +14,11 @@ func init() {
 	keys["p"] = (*ui).peek
 }
 
-// readerTurns is how many messages the reader loads (reap:325).
 const readerTurns = 250
 
-// readerLine is one line of the reader. Its tag is "u" for the line that
-// names the user, "a" for the one that names the agent, "" for text.
+// readerLine tags the name lines: "u" for the user, "a" for the agent, "" for text.
 type readerLine struct{ tag, text string }
 
-// peek opens the reader on the chat under the cursor (reap:1612).
 func (u *ui) peek() {
 	c := u.f.at(u.cur)
 	if c == nil {
@@ -32,9 +29,7 @@ func (u *ui) peek() {
 	u.read(c, readerLines(turns, w))
 }
 
-// readerLines lays the turns out for a terminal w columns wide: a name line,
-// the wrapped text and a blank line per turn. The width is taken once, when
-// the reader opens (reap:1097-1104).
+// readerLines lays the turns out for w columns. The width is taken once, when the reader opens.
 func readerLines(turns []chat.Turn, w int) []readerLine {
 	var lines []readerLine
 	for _, t := range turns {
@@ -58,7 +53,6 @@ func readerLines(turns []chat.Turn, w int) []readerLine {
 	return lines
 }
 
-// read shows the lines and scrolls them until q, Esc or p (reap:1105-1132).
 func (u *ui) read(c *chat.Chat, lines []readerLine) {
 	off := 0
 	for {
@@ -99,9 +93,6 @@ func (u *ui) read(c *chat.Chat, lines []readerLine) {
 	}
 }
 
-// drawReader paints one page of the reader inside a frame titled with the
-// chat's label, with the scroll bar on the bottom edge when there is more
-// than a page.
 func (u *ui) drawReader(c *chat.Chat, lines []readerLine, off, page int) {
 	p := &u.pal
 	w, h := u.s.Size()
@@ -129,7 +120,6 @@ func (u *ui) drawReader(c *chat.Chat, lines []readerLine, off, page int) {
 	}
 }
 
-// progress draws how far down the reader is: a bar of cells and a percent.
 func (u *ui) progress(y, x int, frac float64, cells int) {
 	full, pct := barSize(frac, cells)
 	u.add(y, x, " "+strings.Repeat("█", full), u.pal.acc)
@@ -137,8 +127,7 @@ func (u *ui) progress(y, x int, frac float64, cells int) {
 	u.add(y, x+1+cells, fmt.Sprintf(" %02d%% ", pct), u.pal.dim)
 }
 
-// barSize is the filled cells and the percent for frac. Python's round goes
-// to the even number on a half, so does this.
+// barSize is the filled cells and the percent for frac. It rounds half to even, as Python does.
 func barSize(frac float64, cells int) (full, pct int) {
 	full = int(math.RoundToEven(max(0, min(1, frac)) * float64(cells)))
 	return full, int(math.RoundToEven(frac * 100))

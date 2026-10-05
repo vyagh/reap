@@ -15,9 +15,9 @@ import (
 	"github.com/gdamore/tcell/v3/color"
 )
 
-// colours is the colour count of the terminal's own compiled terminfo entry,
-// which is what curses goes by. It is 0 when no entry is found or readable,
-// and tcell then guesses from the name of TERM.
+// colours is the colour count of the terminal's compiled terminfo entry, which is
+// what curses goes by. It is 0 when no entry is found, and tcell then guesses from
+// the name of TERM.
 func colours() int {
 	name := os.Getenv("TERM")
 	if name == "" {
@@ -33,7 +33,6 @@ func colours() int {
 	return 0
 }
 
-// terminfoDirs are the folders curses reads entries from, in its order.
 func terminfoDirs() []string {
 	var dirs []string
 	if d := os.Getenv("TERMINFO"); d != "" {
@@ -50,10 +49,10 @@ func terminfoDirs() []string {
 	return append(dirs, "/etc/terminfo", "/lib/terminfo", "/usr/share/terminfo")
 }
 
-// coloursIn reads the colors number, the 14th, from a compiled entry: six
-// 16 bit counts (magic, names, booleans, numbers, strings, string table), the
-// names, the booleans padded to an even length, then the numbers. They are 16
-// bits wide, or 32 in the extended format (magic 0x021e). 0 if it has none.
+// coloursIn reads the colors number, the 14th, from a compiled entry: six 16 bit
+// counts (magic, names, booleans, numbers, strings, string table), the names, the
+// booleans padded to an even length, then the numbers. They are 32 bits wide in
+// the extended format (magic 0x021e). 0 if there is none.
 func coloursIn(data []byte) int {
 	const colorsIndex = 13
 	if len(data) < 12 {
@@ -80,8 +79,7 @@ func coloursIn(data []byte) int {
 	return max(0, int(int32(binary.LittleEndian.Uint32(data[at:]))))
 }
 
-// openScreen starts tcell. Without it tcell reads no terminfo and takes any
-// TERM it does not know for a 256 colour terminal.
+// openScreen starts tcell. Without this tcell takes any TERM it does not know for a 256 colour terminal.
 func openScreen() (tcell.Screen, error) {
 	var opts []tcell.TerminfoScreenOption
 	if n := colours(); n > 0 {
@@ -100,8 +98,7 @@ func openScreen() (tcell.Screen, error) {
 	return s, nil
 }
 
-// parseBackground weighs the colour in an OSC 11 reply as perceived
-// brightness, scaling each channel to 0..255 whatever its digit count.
+// parseBackground weighs the colour in an OSC 11 reply as brightness, each channel scaled to 0..255.
 func parseBackground(reply string) (light, known bool) {
 	_, rgb, ok := strings.Cut(strings.ToLower(reply), "rgb:")
 	parts := strings.SplitN(rgb, "/", 3)
@@ -120,7 +117,6 @@ func parseBackground(reply string) (light, known bool) {
 	return c[0]*299+c[1]*587+c[2]*114 >= 128000, true
 }
 
-// hexPrefix is the run of hex digits s starts with.
 func hexPrefix(s string) string {
 	for i, r := range s {
 		if !strings.ContainsRune("0123456789abcdef", r) {
@@ -130,8 +126,7 @@ func hexPrefix(s string) string {
 	return s
 }
 
-// add writes text at row y, column x, and stops one column short of the right
-// edge the way curses' addstr does there. What falls outside is dropped.
+// add writes text at row y, column x, and stops one column short of the right edge, as curses' addstr does.
 func (u *ui) add(y, x int, text string, style tcell.Style) {
 	w, h := u.s.Size()
 	if y < 0 || y >= h || x < 0 {
@@ -144,14 +139,13 @@ func (u *ui) add(y, x int, text string, style tcell.Style) {
 	u.s.PutStrStyled(x, y, string(r), style)
 }
 
-// put writes one frame cell, the last column included.
 func (u *ui) put(y, x int, text string, style tcell.Style) {
 	u.s.PutStrStyled(x, y, text, style)
 }
 
 // keyName is how the dispatch spells a key: the character typed, or Up, Down,
-// Left, Right, PgUp, PgDn, Enter (Ctrl-J too, reap:1686), Esc, Tab, BTab or
-// BSpace. Anything else, and any key held with Alt, is "".
+// Left, Right, PgUp, PgDn, Enter, Esc, Tab, BTab or BSpace. Anything else, and
+// any key held with Alt, is "".
 func keyName(ev *tcell.EventKey) string {
 	if ev.Modifiers()&tcell.ModAlt != 0 {
 		return ""
@@ -185,12 +179,11 @@ func keyName(ev *tcell.EventKey) string {
 	return ""
 }
 
-// mouseReported are the presses Python's curses asks for: the left button
-// and the wheel. Releases and the other buttons never reach reap (reap:932).
+// mouseReported are the presses curses asks for in 0.5.0: the left button and the
+// wheel. Releases and the other buttons never reach reap.
 const mouseReported = tcell.ButtonPrimary | tcell.WheelUp | tcell.WheelDown
 
-// wait returns the next key, mouse or resize event, or nil once d has passed
-// or the screen is gone. A d of 0 waits as long as it takes.
+// wait returns the next key, mouse or resize event, or nil once d has passed. A d of 0 waits for ever.
 func (u *ui) wait(d time.Duration) tcell.Event {
 	var timeout <-chan time.Time
 	if d > 0 {

@@ -14,23 +14,21 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// liveSet is the chats Claude has open. all is set when a file that should
-// say which chats are open could not be read: then no chat can be called
-// closed.
+// liveSet is the chats Claude has open. all is set when a file that should say
+// which are open could not be read, so no chat can be called closed.
 type liveSet struct {
 	ids map[string]bool
 	all bool
 }
 
-// has reports whether the chat with this id counts as open.
 func (l liveSet) has(id string) bool {
 	return l.all || l.ids[id]
 }
 
-// liveSessions reads the session files and the daemon roster once. A session
-// or worker whose process is confirmed gone is a stale file and protects
-// nothing. A session file that cannot be read or parsed counts as every chat
-// being open, since it cannot say which one it is for (reap:230-240).
+// liveSessions reads the session files and the daemon roster once. A session or
+// worker whose process is confirmed gone is stale and protects nothing. A session
+// file that cannot be read or parsed counts as every chat open, since it cannot
+// say which one it is for.
 func liveSessions(h chat.Homes) liveSet {
 	live := liveSet{ids: map[string]bool{}}
 	live.readSessions(filepath.Join(h.Claude, "sessions"))
@@ -66,9 +64,9 @@ func (l *liveSet) readSessions(dir string) {
 	}
 }
 
-// readRoster adds the daemon's workers. A roster that is missing, unreadable
-// or not an object adds nothing. Python stops with an error on a workers
-// value that is not an object (reap:238); here it counts as every chat open.
+// readRoster adds the daemon's workers. A roster that is missing, unreadable or
+// not an object adds nothing. A workers value that is not an object counts as
+// every chat open, where 0.5.0 stops with an error.
 func (l *liveSet) readRoster(path string) {
 	v, _ := readJSON(path)
 	r, ok := v.(map[string]any)
@@ -91,7 +89,6 @@ func (l *liveSet) readRoster(path string) {
 	}
 }
 
-// add records the session an object names unless its process is gone.
 func (l *liveSet) add(o map[string]any) {
 	if procDead(o["pid"], o["pidDomain"]) {
 		return
@@ -102,7 +99,7 @@ func (l *liveSet) add(o map[string]any) {
 }
 
 // ownPidDomain is Claude Code's pidDomain for this host. Every platform but
-// Linux writes the bare string "linux" (reap:204-214).
+// Linux writes the bare string "linux".
 func ownPidDomain() string {
 	if runtime.GOOS != "linux" {
 		return "linux"
@@ -119,9 +116,8 @@ func linuxPidDomain(machineID, pidNS string) string {
 }
 
 // procDead is true only when the pid is confirmed gone. A pid that is not an
-// integer, does not fit a C int, or belongs to another machine or pid
-// namespace (pidDomain) is never judged dead, nor is one the system will not
-// answer for (reap:216-228).
+// integer, does not fit a C int or belongs to another machine or pid namespace
+// (pidDomain) is never judged dead, nor is one the system will not answer for.
 func procDead(pid, domain any) bool {
 	n, ok := pid.(json.Number)
 	if !ok {

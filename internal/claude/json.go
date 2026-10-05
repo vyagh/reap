@@ -19,9 +19,8 @@ const (
 )
 
 // readJSON reads a JSON file that may be caught mid-write, trying up to three
-// times with a short wait between them. A missing file returns fs.ErrNotExist
-// at once. Numbers come back as json.Number so an integer and a float stay
-// apart (reap:160-169).
+// times. A missing file returns fs.ErrNotExist at once. Numbers come back as
+// json.Number so an integer and a float stay apart.
 func readJSON(path string) (any, error) {
 	var err error
 	for i := range jsonTries {
@@ -43,8 +42,7 @@ func readJSON(path string) (any, error) {
 	return nil, err
 }
 
-// parseJSON decodes one JSON value. Bytes that are not UTF-8 are an error, as
-// they are for Python, not replaced.
+// parseJSON decodes one JSON value. Bytes that are not UTF-8 are an error, as in 0.5.0.
 func parseJSON(data []byte) (any, error) {
 	if !utf8.Valid(data) {
 		return nil, errors.New("not valid UTF-8")
@@ -61,8 +59,8 @@ func parseJSON(data []byte) (any, error) {
 	return v, nil
 }
 
-// truthy is Python's truth test on a decoded JSON value: null, false, 0, ""
-// and empty lists and objects are false.
+// truthy is Python's truth test on a decoded JSON value: null, false, 0, "" and
+// empty lists and objects are false.
 func truthy(v any) bool {
 	switch v := v.(type) {
 	case nil:

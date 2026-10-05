@@ -2,19 +2,19 @@ package chat
 
 import "path/filepath"
 
-// Homes are the folders reap reads and writes. Each agent and each
-// trash function gets one, so no path lives in a package variable.
+// Homes are the folders reap reads and writes, passed in so no path lives in a
+// package variable.
 type Homes struct {
-	Home   string // the user's home folder, shown as ~ in project names
+	Home   string
 	Claude string // Claude Code's folder, holding projects/
 	Codex  string // Codex's folder, holding sessions/ and archived_sessions/
-	State  string // reap's own state folder
+	State  string
 	Trash  string // where soft-deleted chats wait, inside the Claude folder
 }
 
-// NewHomes reads the folders the way reap 0.5.0 does: CLAUDE_CONFIG_DIR or
-// ~/.claude, CODEX_HOME or ~/.codex, ~/.local/state/reap, and the trash at
-// <claude home>/.reap-trash. An empty variable counts as unset (reap:49-59).
+// NewHomes reads the folders as 0.5.0 does: CLAUDE_CONFIG_DIR or ~/.claude,
+// CODEX_HOME or ~/.codex, ~/.local/state/reap, and the trash at
+// <claude home>/.reap-trash. An empty variable counts as unset.
 func NewHomes(getenv func(string) string, home string) Homes {
 	claude := getenv("CLAUDE_CONFIG_DIR")
 	if claude == "" {

@@ -12,15 +12,15 @@ import (
 	"time"
 )
 
-// exists reports whether path is there, following symlinks as Python's
-// os.path.exists does, so a dangling link counts as missing.
+// exists reports whether path is there. A dangling link counts as missing, as in
+// 0.5.0.
 func exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-// rename moves from to to by renaming. A move across disks is refused: reap
-// never copies a chat, since a half-copied chat is worse than one left in place.
+// rename moves from to to. A move across disks is refused: a half-copied chat is
+// worse than one left in place.
 func rename(from, to string) error {
 	err := os.Rename(from, to)
 	if errors.Is(err, syscall.EXDEV) {
@@ -31,7 +31,7 @@ func rename(from, to string) error {
 
 // storedName is the name src gets inside the entry. A name already taken
 // there gets its parent folder's name in front, so the sidecar folder <uuid>
-// and file-history/<uuid> sit side by side (reap:596-598).
+// and file-history/<uuid> sit side by side.
 func storedName(dir, src string) string {
 	base := filepath.Base(src)
 	if exists(filepath.Join(dir, base)) {
@@ -48,14 +48,13 @@ func writeRecord(dir string, rec Record) error {
 	return os.WriteFile(filepath.Join(dir, "reap-meta.json"), data, 0o644)
 }
 
-// Move makes the trash entry <ms>-<key> and moves each path that exists into
-// it, then writes rec with Moved and At filled in. An empty rec.Proj becomes
-// the pretty name of rec.Dir, or ~ when there is none (reap:589-606).
+// Move makes the trash entry <ms>-<key>, moves each path that exists into it and
+// writes rec with Moved and At filled in. An empty rec.Proj becomes the pretty
+// name of rec.Dir, or ~ when there is none.
 //
-// Move is all or nothing. If any step fails, the files already moved go back
-// where they were and the error says the chat was not trashed. If some cannot
-// go back, they stay in the entry, the error names the entry folder, and a
-// record for them is written so restore can still find them.
+// Move is all or nothing. If a step fails, the files already moved go back and
+// the error says the chat was not trashed. Any that cannot go back stay in the
+// entry, the error names it, and a record is written so restore can find them.
 func Move(h Homes, key string, paths []string, rec Record) (Entry, error) {
 	if err := os.MkdirAll(h.Trash, 0o755); err != nil {
 		return Entry{}, fmt.Errorf("not trashed: %w", err)
@@ -118,7 +117,7 @@ func putBack(dir string, rec Record, cause error) error {
 }
 
 // trashPaths lists what sits directly in the trash. Names that start with a dot
-// are left out, as Python's glob leaves them (reap:720).
+// are left out, as in 0.5.0.
 func trashPaths(h Homes) []string {
 	names, err := os.ReadDir(h.Trash)
 	if err != nil {
@@ -134,7 +133,7 @@ func trashPaths(h Homes) []string {
 }
 
 // entries reads every trash folder with a usable record, newest first. An old
-// record without a project gets one from its folder name (reap:720-731, 741).
+// record without a project gets one from its folder name.
 func entries(h Homes) []Entry {
 	var out []Entry
 	for _, p := range trashPaths(h) {
@@ -156,8 +155,8 @@ func entries(h Homes) []Entry {
 
 // ListTrash is every trash entry with a usable record, newest first. An entry
 // whose record has no working folder gets one from its trashed transcript, else
-// from a transcript still in its project folder. cwdOf reads the working folder
-// out of one Claude transcript; for a Codex entry it finds nothing (reap:732-734).
+// from a transcript still in its project folder. cwdOf reads the folder out of a
+// Claude transcript and finds nothing for a Codex entry.
 func ListTrash(h Homes, cwdOf func(transcript string) string) []Entry {
 	out := entries(h)
 	for i := range out {
@@ -180,7 +179,7 @@ func findCwd(e Entry, cwdOf func(string) string) string {
 	return dirCwd(e.Record.Dir, cwdOf)
 }
 
-// dirCwd is the working folder of the first transcript in dir that has one (reap:713-718).
+// dirCwd is the working folder of the first transcript in dir that has one.
 func dirCwd(dir string, cwdOf func(string) string) string {
 	names, _ := os.ReadDir(dir)
 	for _, n := range names {
@@ -195,7 +194,7 @@ func dirCwd(dir string, cwdOf func(string) string) string {
 }
 
 // TrashStat is how many entries the trash lists and how many bytes they hold.
-// It walks the trash, so call it when something changed, not on every redraw.
+// It walks the trash, so not on every redraw.
 func TrashStat(h Homes) (count int, size int64) {
 	list := entries(h)
 	for _, e := range list {
@@ -204,10 +203,10 @@ func TrashStat(h Homes) (count int, size int64) {
 	return len(list), size
 }
 
-// Prune purges every entry older than TrashDays through its agent. A folder
-// with no usable record goes by its modified time and is removed whole. Loose
-// files and links in the trash are left alone. It prints nothing; an entry
-// that cannot be purged stays and is tried again at the next launch (reap:772-786).
+// Prune purges every entry older than TrashDays through its agent. A folder with
+// no usable record goes by its modified time and is removed whole. Loose files and
+// links in the trash are left alone. An entry that cannot be purged stays for the
+// next launch.
 func Prune(h Homes, agents Agents, now time.Time) {
 	cutoff := now.Add(-TrashDays * 24 * time.Hour)
 	for _, p := range trashPaths(h) {

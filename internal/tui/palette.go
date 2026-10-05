@@ -5,9 +5,9 @@ import (
 	"github.com/gdamore/tcell/v3/color"
 )
 
-// palette is every style the screen draws with (reap:943-987). A terminal
-// that cannot say whether its background is light or dark gets no fills.
-// One with fewer than 256 colours gets plain ANSI colours and attributes.
+// palette is every style the screen draws with. A terminal that cannot say whether
+// its background is light or dark gets no fills, and one with fewer than 256
+// colours gets plain ANSI colours and attributes.
 type palette struct {
 	live, ok, yel, danger, acc, dim, line, sel, warn tcell.Style
 	tabOn, trashOn, tabOff, tabCnt, tabPin, label    tcell.Style
@@ -15,15 +15,13 @@ type palette struct {
 	tint, tintLive, tintAcc                          tcell.Style
 	trayD, trayLive, trayAcc                         tcell.Style
 	bold                                             tcell.Style
-	// divider is the line colour, or dim where the terminal has none.
-	divider tcell.Style
+	divider                                          tcell.Style
 	// band is true when tabs and group headers sit on a tinted band, tray
 	// when hidden chats sit on a darker one.
 	band, tray bool
 }
 
-// newPalette builds the look for a terminal with this many colours. light and
-// known are the answer of lightBackground.
+// newPalette takes the colour count and the answer of lightBackground.
 func newPalette(colours int, light, known bool) palette {
 	plain := tcell.StyleDefault
 	fg := func(n int) tcell.Style { return plain.Foreground(color.PaletteColor(n)) }

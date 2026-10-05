@@ -8,8 +8,6 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// Cursor moves. All of them stay on lines the cursor can stand on (f.ci).
-
 func (u *ui) goTo(pos int) {
 	if len(u.f.ci) > 0 {
 		u.cur = u.f.ci[max(0, min(pos, len(u.f.ci)-1))]
@@ -23,7 +21,6 @@ func (u *ui) pageUp()   { u.goTo(u.f.pos - u.f.body) }
 func (u *ui) first()    { u.goTo(0) }
 func (u *ui) last()     { u.goTo(len(u.f.ci) - 1) }
 
-// headers are the items that open a group.
 func (u *ui) headers() []int {
 	var hd []int
 	for i, it := range u.f.items {
@@ -34,7 +31,6 @@ func (u *ui) headers() []int {
 	return hd
 }
 
-// nextGroup moves to the first chat of the next group.
 func (u *ui) nextGroup() {
 	if !u.grouped {
 		return
@@ -54,8 +50,6 @@ func (u *ui) nextGroup() {
 	}
 }
 
-// prevGroup moves to the first chat of this group, or of the one before it
-// when already there.
 func (u *ui) prevGroup() {
 	if !u.grouped {
 		return
@@ -74,7 +68,6 @@ func (u *ui) prevGroup() {
 	}
 }
 
-// fold opens or closes the group the cursor is in.
 func (u *ui) fold() {
 	if !u.grouped {
 		return
@@ -85,7 +78,6 @@ func (u *ui) fold() {
 	}
 }
 
-// foldAll closes every shown group, or opens them all when they are closed.
 func (u *ui) foldAll() {
 	if !u.grouped {
 		return
@@ -128,14 +120,12 @@ func (u *ui) prevTab() {
 	}
 }
 
-// save writes the state file and says so when that fails.
 func (u *ui) save(st chat.State) {
 	if err := chat.SaveState(u.start.Homes, st, u.start.Agents); err != nil {
 		u.msg = message{text: "could not save: " + err.Error()}
 	}
 }
 
-// pin makes the current tab the one reap opens on, or undoes that.
 func (u *ui) pin() {
 	if len(u.tabs) < 2 {
 		return
@@ -151,8 +141,7 @@ func (u *ui) pin() {
 	u.save(st)
 }
 
-// pick toggles the chat under the cursor and moves down. A running chat
-// cannot be picked.
+// pick toggles the chat under the cursor and moves down. A running chat cannot be picked.
 func (u *ui) pick() {
 	c := u.f.at(u.cur)
 	if c == nil {
@@ -168,8 +157,7 @@ func (u *ui) pick() {
 	u.goTo(u.f.pos + 1)
 }
 
-// pickAll picks every chat shown that can be picked, or unpicks them when
-// they all are.
+// pickAll picks every chat shown that can be, or unpicks them when all are.
 func (u *ui) pickAll() {
 	var able []string
 	for _, c := range u.f.vis {
@@ -190,8 +178,7 @@ func (u *ui) pickAll() {
 	}
 }
 
-// hide hides the picked chats from the list, or the one under the cursor. It
-// brings back what is already hidden. Nothing is deleted.
+// hide hides the picked chats, or the one under the cursor, and unhides ones already hidden.
 func (u *ui) hide() {
 	st := chat.LoadState(u.start.Homes)
 	now := float64(time.Now().UnixNano()) / 1e9
@@ -233,7 +220,6 @@ func (u *ui) hide() {
 	u.save(st)
 }
 
-// setHidden marks c hidden or not in the list and in the state to write.
 func (u *ui) setHidden(st *chat.State, c *chat.Chat, hidden bool, now float64) {
 	c.Hidden = hidden
 	if hidden {
@@ -244,8 +230,7 @@ func (u *ui) setHidden(st *chat.State, c *chat.Chat, hidden bool, now float64) {
 	}
 }
 
-// toggleHidden shows or hides the hidden chats, and keeps the cursor on its
-// chat, or on the nearest one still shown.
+// toggleHidden shows or hides the hidden chats and keeps the cursor on its chat, or the nearest one shown.
 func (u *ui) toggleHidden() {
 	c := u.f.at(u.cur)
 	u.showKept = !u.showKept
@@ -268,9 +253,8 @@ func (u *ui) toggleHidden() {
 			near, best = x, d
 		}
 	}
-	// Python reuses the variable that holds the first frame's folder here,
-	// so the cursor only follows when its chat is the first one in the list
-	// (reap:1680-1683, 1210-1212).
+	// 0.5.0 reuses the variable that holds the first frame's folder here, so the
+	// cursor only follows when its chat is the first one in the list.
 	if near != nil && at == 0 {
 		u.focus = near.ID
 	}

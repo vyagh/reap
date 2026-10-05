@@ -11,13 +11,12 @@ import (
 type kind int
 
 const (
-	gap   kind = iota // blank line between two groups
-	hdr               // project group header
-	row               // one chat
-	label             // the "hidden" divider
+	gap   kind = iota
+	hdr        // project group header
+	row        // one chat
+	label      // the "hidden" divider
 )
 
-// item is one line of the list.
 type item struct {
 	kind kind
 	chat *chat.Chat // row
@@ -28,15 +27,13 @@ type item struct {
 	cwd  string
 }
 
-// span is the columns of one drawn tab, for clicks.
 type span struct {
 	x0, x1 int
 	tab    string
 }
 
-// frame is what one pass of the loop works out from the state before it
-// draws: the lines of the list, where the cursor can stand, how the terminal
-// is split. A key handler reads it as the screen the key was pressed on.
+// frame is what one pass of the loop works out from the state before it draws. A
+// key handler reads it as the screen the key was pressed on.
 type frame struct {
 	w, h     int
 	tabChats []*chat.Chat   // the current tab's chats, in loader order
@@ -55,7 +52,6 @@ type frame struct {
 	rowAt    map[int]int    // screen row -> item index
 }
 
-// at is the chat on item i, nil when it is not a chat line.
 func (f frame) at(i int) *chat.Chat {
 	if i < 0 || i >= len(f.items) || f.items[i].kind != row {
 		return nil
@@ -63,8 +59,7 @@ func (f frame) at(i int) *chat.Chat {
 	return f.items[i].chat
 }
 
-// plan works out the frame for the current state (reap:1178-1238) and keeps
-// the cursor on a line it can stand on.
+// plan builds the frame and moves the cursor onto a line it can stand on.
 func (u *ui) plan() {
 	f := &u.f
 	f.w, f.h = u.s.Size()
@@ -139,8 +134,8 @@ func (u *ui) plan() {
 }
 
 // lines lays vis out as gap, header, chat and divider lines. Hidden chats sit
-// under their project behind a "hidden" divider. A folded project is its
-// header alone. The map counts hidden chats per project.
+// under their project behind a "hidden" divider. The map counts hidden chats per
+// project.
 func (u *ui) lines() ([]item, map[string]int) {
 	f := &u.f
 	var items []item
@@ -214,9 +209,8 @@ func (u *ui) lines() ([]item, map[string]int) {
 	return items, hidden
 }
 
-// order is the chats in the order of the sort mode. Newest keeps the loader's
-// order. When grouped the projects follow the mode too: by their oldest chat,
-// or by total size (reap:806-817).
+// order sorts the chats by the sort mode. Newest keeps the loader's order. When
+// grouped the projects follow the mode too, by their oldest chat or total size.
 func order(chats []*chat.Chat, mode string, grouped bool) []*chat.Chat {
 	if mode == "newest" {
 		return chats
@@ -254,7 +248,6 @@ func order(chats []*chat.Chat, mode string, grouped bool) []*chat.Chat {
 	return out
 }
 
-// groupOf is the header at or before item i, or -1 when there is none.
 func groupOf(items []item, i int) int {
 	for j := min(i, len(items)-1); j >= 0; j-- {
 		if items[j].kind == hdr {
@@ -264,9 +257,7 @@ func groupOf(items []item, i int) int {
 	return -1
 }
 
-// planView is the scroll position, the header pinned above the list when the
-// real one has scrolled off (or -1), and the rows left for the list
-// (reap:825-837).
+// planView is the scroll position, the header pinned above a scrolled list (or -1) and the rows left.
 func planView(items []item, cur, top, avail int, grouped bool) (newTop, pin, body int) {
 	if len(items) == 0 {
 		return 0, -1, avail

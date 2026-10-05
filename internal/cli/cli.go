@@ -13,26 +13,22 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// Version is what reap --version prints.
 const Version = "0.5.0"
 
 const allGone = "--all is gone: plain reap shows every project"
 
-// Env is everything Run needs from the outside, so a test can run reap on a
-// fake home with fake agents.
+// Env is everything Run needs from outside, so a test can use a fake home and agents.
 type Env struct {
 	Stdout, Stderr io.Writer
 	Stdin          io.Reader
 	Getenv         func(string) string
 	Homes          chat.Homes
-	// Agents builds the agents in tab order. noCodexCLI is the
-	// --no-codex-cli flag: Codex files go into reap's trash instead of
-	// through the codex command.
+	// Agents builds the agents in tab order. noCodexCLI is the --no-codex-cli flag:
+	// Codex files go into reap's trash instead of through the codex command.
 	Agents func(noCodexCLI bool) chat.Agents
 	// CwdOf reads the working folder out of one Claude transcript.
-	CwdOf func(transcript string) string
-	Now   func() time.Time
-	// Terminal is true when Stdout is a terminal.
+	CwdOf    func(transcript string) string
+	Now      func() time.Time
 	Terminal bool
 	// Screen opens the full-screen view. Nil means there is none.
 	Screen func(Start) error
@@ -47,17 +43,15 @@ type Start struct {
 	Load    func(full bool) ([]chat.Chat, error)
 	Title   string
 	Grouped bool
-	// CwdOf reads the working folder out of one Claude transcript.
-	CwdOf func(transcript string) string
+	CwdOf   func(transcript string) string
 	// NoCodexCLI is the --no-codex-cli flag: a Codex purge does not call codex.
 	NoCodexCLI bool
-	// Home is the project folder the cursor starts on. It is only set when
-	// the view shows every project.
+	// Home is the project folder the cursor starts on. It is only set when the view
+	// shows every project.
 	Home string
 }
 
-// Run runs reap with the arguments after the program name and returns the exit
-// code. Everything it prints goes to env.Stdout and env.Stderr.
+// Run runs reap with the arguments after the program name and returns the exit code.
 func Run(args []string, env Env) int {
 	if slices.Contains(args, "--version") || slices.Contains(args, "-V") {
 		fmt.Fprintf(env.Stdout, "reap %s\n", Version)
@@ -85,14 +79,12 @@ func Run(args []string, env Env) int {
 	return cmdDefault(env, agents, noCLI, args)
 }
 
-// die prints msg to stderr and returns 1, where Python calls sys.exit with a string.
+// die prints msg to stderr and returns 1, as 0.5.0 does with sys.exit on a string.
 func die(env Env, msg any) int {
 	fmt.Fprintln(env.Stderr, msg)
 	return 1
 }
 
-// popFlag removes the first occurrence of flag from args and reports whether
-// there was one.
 func popFlag(args *[]string, flag string) bool {
 	i := slices.Index(*args, flag)
 	if i < 0 {
@@ -102,9 +94,8 @@ func popFlag(args *[]string, flag string) bool {
 	return true
 }
 
-// popOpt removes the first occurrence of opt and the argument after it, which
-// is the value even when it looks like a flag. It returns "" when opt is absent
-// or last.
+// popOpt removes opt and the argument after it, which is the value even when it
+// looks like a flag.
 func popOpt(args *[]string, opt string) string {
 	i := slices.Index(*args, opt)
 	if i < 0 {
@@ -118,7 +109,6 @@ func popOpt(args *[]string, opt string) string {
 	return val
 }
 
-// operands are the arguments that do not start with a dash.
 func operands(args []string) []string {
 	var out []string
 	for _, a := range args {

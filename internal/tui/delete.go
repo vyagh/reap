@@ -16,8 +16,6 @@ func init() {
 	keys["u"] = (*ui).undoDelete
 }
 
-// askDelete asks before it moves the picked chats to the trash (reap:1690-1721).
-// With nothing picked it does nothing.
 func (u *ui) askDelete() {
 	if len(u.picked) == 0 {
 		u.msg = message{text: "nothing selected"}
@@ -39,11 +37,9 @@ func (u *ui) askDelete() {
 	u.trashPicked(sel)
 }
 
-// trashPicked moves each chat to the trash. A chat can start running between
-// the pick and the confirm, so each one is asked again right before it moves,
-// and one that is running now is left alone. A chat the agent cannot trash is
-// left where it is, and the message says why. The entries that were made go on
-// the undo list, even when there are none (reap:1697-1721).
+// trashPicked moves each chat to the trash. A chat can start running between the
+// pick and the confirm, so each is asked again right before it moves and a running
+// one is left alone. A chat the agent cannot trash stays, and the message says why.
 func (u *ui) trashPicked(sel []*chat.Chat) {
 	st := chat.LoadState(u.start.Homes)
 	var done []chat.Entry
@@ -87,7 +83,6 @@ func (u *ui) trashPicked(sel []*chat.Chat) {
 	}
 }
 
-// undoDelete puts back the chats of the last delete (reap:1627-1634).
 func (u *ui) undoDelete() {
 	if len(u.undo) == 0 {
 		u.msg = message{text: "nothing to undo"}
@@ -128,9 +123,7 @@ func (u *ui) undoDelete() {
 	}
 }
 
-// confirmDelete draws the box that lists what would be deleted, or purged for
-// good, the biggest chats first, and reports whether the user answered y
-// (reap:1143-1176).
+// confirmDelete lists what would be deleted, biggest chats first, and reports whether the user answered y.
 func (u *ui) confirmDelete(sel []*chat.Chat, purge bool) bool {
 	sel = slices.Clone(sel)
 	slices.SortStableFunc(sel, func(a, b *chat.Chat) int { return cmp.Compare(b.Size, a.Size) })

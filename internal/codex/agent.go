@@ -8,23 +8,20 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// Agent is the Codex CLI. It reads rollouts under sessions/ and asks the lock
-// files whether a chat is still open.
+// Agent is the Codex CLI. Its chats are the rollouts under sessions/, and the lock
+// files say whether one is still open.
 type Agent struct {
 	h     chat.Homes
 	noCLI bool // move files into reap's trash instead of calling codex
 }
 
-// New returns the Codex agent for the folders in h. With noCLI set, deletes
-// move the rollout file into reap's trash instead of calling the codex command.
+// New returns the Codex agent for the folders in h. With noCLI set, deletes move the rollout into reap's trash instead of calling codex.
 func New(h chat.Homes, noCLI bool) *Agent {
 	return &Agent{h: h, noCLI: noCLI}
 }
 
 func (a *Agent) Name() chat.Source { return chat.Codex }
 
-// Installed is true when Codex has a sessions or an archived_sessions folder
-// (reap:464-467).
 func (a *Agent) Installed() bool {
 	for _, d := range []string{"sessions", "archived_sessions"} {
 		if st, err := os.Stat(filepath.Join(a.h.Codex, d)); err == nil && st.IsDir() {
@@ -37,8 +34,7 @@ func (a *Agent) Installed() bool {
 // List returns every rollout under sessions/ that starts with a session_meta
 // line. Helper runs (subagent, guardian_review) are left out unless
 // opts.Subagents is set. A chat groups under the Claude project folder named
-// after the folder it last ran in, so opts.Dir keeps the chats of that one
-// folder. opts.Tmp and opts.Full do not apply to Codex (reap:469-491, 519-521).
+// after the folder it last ran in. opts.Tmp and opts.Full do not apply to Codex.
 func (a *Agent) List(opts chat.ListOpts) ([]chat.Chat, error) {
 	paths, err := rollouts(a.h.Codex)
 	if err != nil {
@@ -97,12 +93,10 @@ func (a *Agent) List(opts chat.ListOpts) ([]chat.Chat, error) {
 	return out, nil
 }
 
-// Live asks the lock file again, right before a delete.
 func (a *Agent) Live(c chat.Chat) bool { return lockLive(a.h.Codex, c.ID) }
 
 // Exists reports whether a rollout under sessions/ has this id in its name. If
-// the folder cannot be searched it says yes, so nothing is forgotten on a guess
-// (reap:442-443).
+// the folder cannot be searched it says yes, so no hidden id is dropped on a guess.
 func (a *Agent) Exists(id string) bool {
 	paths, err := rollouts(a.h.Codex)
 	if err != nil {
@@ -116,18 +110,15 @@ func (a *Agent) Exists(id string) bool {
 	return false
 }
 
-// Kinds is nil: a Codex delete moves the one rollout file, and the dry-run
-// line names the agent instead.
+// Kinds is nil, so the dry-run line names the agent.
 func (a *Agent) Kinds(chat.Chat) []string { return nil }
 
-// Peek reads up to max turns from c.Path. Codex rollouts hold no tool markers,
-// so textOnly changes nothing.
+// Peek ignores textOnly, since rollouts hold no tool markers.
 func (a *Agent) Peek(c chat.Chat, max int, textOnly bool) ([]chat.Turn, error) {
 	return peek(c.Path, max)
 }
 
-// Count is the number of real prompts in the first 400 lines of c.Path, the
-// same count List shows (reap:408-428).
+// Count is the real prompts in the first 400 lines of c.Path, as List shows.
 func (a *Agent) Count(c chat.Chat) (int, error) {
 	if _, err := os.Stat(c.Path); err != nil {
 		return 0, err
@@ -136,8 +127,8 @@ func (a *Agent) Count(c chat.Chat) (int, error) {
 	return n, nil
 }
 
-// ResumeCmd is codex resume, run in the folder of the chat's newest turn,
-// which can differ from the folder List shows (reap:624-625, 1689).
+// ResumeCmd is codex resume, run in the folder of the chat's newest turn. That can
+// differ from the folder List shows.
 func (a *Agent) ResumeCmd(c chat.Chat) ([]string, string, error) {
 	dir := lastCwd(c.Path, wholeFile)
 	if dir == "" {

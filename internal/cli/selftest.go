@@ -11,10 +11,9 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-// selftest is --selftest: it reads the chats in full, prints what it saw and
-// checks that the quick read at launch agrees with a full read (reap:876-892).
-// A failed check is an error on stderr and exit 1, where Python dies with an
-// AssertionError.
+// selftest reads the chats in full and checks that the quick read at launch
+// agrees. A failed check is an error on stderr and exit 1, where 0.5.0 dies with
+// an AssertionError.
 func selftest(env Env, agents chat.Agents, load func(bool) ([]chat.Chat, error), where string) int {
 	chats, err := load(true)
 	if err != nil {
@@ -65,9 +64,9 @@ func selftest(env Env, agents chat.Agents, load func(bool) ([]chat.Chat, error),
 	return 0
 }
 
-// endsOnlyDiffers compares the chats read in full with the same chats read
-// from their ends only, for Claude chats, and returns "<short> <field>" for each
-// difference in title, prompt or cwd, with the number of Claude chats compared.
+// endsOnlyDiffers compares Claude chats read in full with the same chats read from
+// their ends only. It returns "<short> <field>" for each difference in title,
+// prompt or cwd, and the number of chats compared.
 func endsOnlyDiffers(full, quick []chat.Chat) (bad []string, n int) {
 	byID := map[string]chat.Chat{}
 	for _, c := range quick {
@@ -93,8 +92,8 @@ func endsOnlyDiffers(full, quick []chat.Chat) (bad []string, n int) {
 }
 
 // selftestTrash makes four trash entries in a scratch folder, one per record
-// layout, and checks the trash lists them under the right project (reap:849-874).
-// An entry written before records carried a project and a cwd must still list.
+// layout, and checks each lists under the right project. An entry written before
+// records carried a project and a cwd must still list.
 func selftestTrash(env Env) error {
 	scratch, err := os.MkdirTemp("", "reap")
 	if err != nil {

@@ -20,9 +20,7 @@ func init() {
 	keys["E"] = (*ui).empty
 }
 
-// trashLoader lists the trash entries as chats, projects with the newest
-// deletion first, and keeps each one's days left and entry for the view
-// (reap:756-770).
+// trashLoader lists the trash entries as chats, projects with the newest deletion first.
 func trashLoader(start cli.Start, left map[string]int, entries map[string]chat.Entry) func(bool) ([]chat.Chat, error) {
 	return func(bool) ([]chat.Chat, error) {
 		now := time.Now()
@@ -50,8 +48,6 @@ func trashLoader(start cli.Start, left map[string]int, entries map[string]chat.E
 	}
 }
 
-// openTrash shows the trash view until the user leaves it, then brings the
-// list up to date with what was done there (reap:1614-1627).
 func (u *ui) openTrash() {
 	left := map[string]int{}
 	entries := map[string]chat.Entry{}
@@ -76,8 +72,7 @@ func (u *ui) openTrash() {
 	}
 }
 
-// forgetUndone drops from the undo lists the trash entries that are gone, as
-// purged or restored in the trash view.
+// forgetUndone drops entries purged or restored in the trash view from the undo lists.
 func (u *ui) forgetUndone() {
 	var kept [][]chat.Entry
 	for _, group := range u.undo {
@@ -94,8 +89,6 @@ func (u *ui) forgetUndone() {
 	u.undo = kept
 }
 
-// focusRestored puts the cursor on the first restored chat the list shows
-// and says what came back.
 func (u *ui) focusRestored(back []chat.Chat) {
 	ids := map[string]bool{}
 	for _, c := range back {
@@ -118,7 +111,6 @@ func (u *ui) focusRestored(back []chat.Chat) {
 	}
 }
 
-// pickedChats is the picked chats in list order.
 func (u *ui) pickedChats() []*chat.Chat {
 	var sel []*chat.Chat
 	for i := range u.chats {
@@ -129,8 +121,7 @@ func (u *ui) pickedChats() []*chat.Chat {
 	return sel
 }
 
-// restore puts back the picked chats, or the one under the cursor
-// (reap:1518-1531). A chat that did not fully come back stays in the trash.
+// restore puts back the picked chats, or the one under the cursor. A chat that did not fully come back stays.
 func (u *ui) restore() {
 	if !u.trashing {
 		return
@@ -159,7 +150,6 @@ func (u *ui) restore() {
 	u.trashChanged(sel)
 }
 
-// purge removes the picked chats for good, after asking (reap:1532-1537).
 func (u *ui) purge() {
 	if !u.trashing {
 		return
@@ -176,8 +166,7 @@ func (u *ui) purge() {
 	}
 }
 
-// empty removes every chat the view shows for good, after asking
-// (reap:1538-1552). With a filter on that is only the rows it matches.
+// empty purges every chat the view shows, after asking. With a filter on, only the rows it matches.
 func (u *ui) empty() {
 	if !u.trashing {
 		return
@@ -218,8 +207,7 @@ func (u *ui) empty() {
 	u.trashChanged(sel)
 }
 
-// removeForGood purges the entries of sel. Python says it purged them all;
-// here a purge that failed is said (reap:1535, 1550).
+// removeForGood purges the entries of sel. 0.5.0 says it purged them all, even when a purge failed.
 func (u *ui) removeForGood(sel []*chat.Chat, done string) message {
 	var failed []*chat.Chat
 	for _, c := range sel {
@@ -240,7 +228,6 @@ func (u *ui) removeForGood(sel []*chat.Chat, done string) message {
 	return message{done + chat.Plural(len(sel)), true}
 }
 
-// trashChanged reloads the view after something was done to sel.
 func (u *ui) trashChanged(sel []*chat.Chat) {
 	if len(sel) == 0 {
 		return
@@ -252,8 +239,7 @@ func (u *ui) trashChanged(sel []*chat.Chat) {
 	}
 }
 
-// confirmAsk draws a small box over the screen and reports whether the next
-// key is y (reap:1134-1141). Any other key, a click or a resize cancels.
+// confirmAsk reports whether the next key is y. Any other key, a click or a resize cancels.
 func (u *ui) confirmAsk(prompt, hint string) bool {
 	w, h := u.s.Size()
 	ww := min(max(rlen(prompt)+6, rlen(hint)+6, 44), w-2)
@@ -264,7 +250,6 @@ func (u *ui) confirmAsk(prompt, hint string) bool {
 	return u.askedYes()
 }
 
-// askedYes shows the box and waits for one event. Only y or Y says yes.
 func (u *ui) askedYes() bool {
 	u.s.Show()
 	ev, ok := u.wait(0).(*tcell.EventKey)

@@ -12,15 +12,13 @@ import (
 type Source string
 
 const (
-	// Claude is Claude Code.
 	Claude Source = "claude"
-	// Codex is the Codex CLI.
-	Codex Source = "codex"
+	Codex  Source = "codex"
 )
 
 // Chat is one session of one agent, as the list shows it.
 type Chat struct {
-	ID     string // the session uuid
+	ID     string
 	Source Source
 	Dir    string // the Claude project folder it groups under, "" if none
 	Proj   string // display name of that project, "~" for the home folder
