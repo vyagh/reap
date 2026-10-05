@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/vyagh/reap/internal/chat"
 )
@@ -101,7 +99,7 @@ func cmdDefault(env Env, agents chat.Agents, noCLI bool, args []string) int {
 		grouped = false
 		title = chat.Pretty(env.Homes, dir)
 		if names[0] == "." {
-			wd, err := workingDir()
+			wd, err := chat.PhysicalWd()
 			if err != nil {
 				return die(env, err)
 			}
@@ -146,14 +144,4 @@ func openScreen(env Env, agents chat.Agents, noCLI bool, load func(bool) ([]chat
 		return die(env, "reap: "+err.Error())
 	}
 	return 0
-}
-
-// workingDir is the current folder with links resolved, as Python's
-// os.getcwd gives it. Go's os.Getwd would trust $PWD instead.
-func workingDir() (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	return filepath.EvalSymlinks(wd)
 }

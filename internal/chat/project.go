@@ -97,9 +97,9 @@ func UnderProj(h Homes, dir string) bool {
 	return err == nil && filepath.Dir(real) == proj
 }
 
-// projectDirs is every project folder that passes UnderProj, in name order.
+// ProjectDirs is every project folder that passes UnderProj, in name order.
 // Names starting with a dot are left out, as Python's glob leaves them out.
-func projectDirs(h Homes) []string {
+func ProjectDirs(h Homes) []string {
 	entries, _ := os.ReadDir(projectsDir(h))
 	var dirs []string
 	for _, e := range entries {
@@ -115,7 +115,7 @@ func projectDirs(h Homes) []string {
 // cwd. Claude Code caps a long folder name and adds a hash reap cannot
 // reproduce, so the name alone cannot be trusted (reap:114-124).
 func dirByCwd(h Homes, cwd string, cwdOf func(string) string) string {
-	for _, d := range projectDirs(h) {
+	for _, d := range ProjectDirs(h) {
 		entries, _ := os.ReadDir(d)
 		for _, e := range entries {
 			if strings.HasPrefix(e.Name(), ".") || !strings.HasSuffix(e.Name(), ".jsonl") {
@@ -142,7 +142,7 @@ func ResolveDir(h Homes, arg string, strict bool, cwdOf func(transcript string) 
 	proj := projectsDir(h)
 	d := ""
 	if arg == "" {
-		wd, err := physicalWd()
+		wd, err := PhysicalWd()
 		if err != nil {
 			return "", err
 		}
@@ -155,7 +155,7 @@ func ResolveDir(h Homes, arg string, strict bool, cwdOf func(transcript string) 
 	} else if fi, err := os.Stat(arg); err == nil && fi.IsDir() {
 		ap := arg
 		if !filepath.IsAbs(arg) {
-			wd, err := physicalWd()
+			wd, err := PhysicalWd()
 			if err != nil {
 				return "", err
 			}
@@ -174,7 +174,7 @@ func ResolveDir(h Homes, arg string, strict bool, cwdOf func(transcript string) 
 		return d, nil
 	}
 	var cands []string
-	for _, c := range projectDirs(h) {
+	for _, c := range ProjectDirs(h) {
 		if strings.Contains(filepath.Base(c), arg) {
 			cands = append(cands, c)
 		}
@@ -203,10 +203,10 @@ func ResolveDir(h Homes, arg string, strict bool, cwdOf func(transcript string) 
 	return "", fmt.Errorf("ambiguous '%s':\n  %s", arg, strings.Join(names, "\n  "))
 }
 
-// physicalWd is the current folder with symlinks resolved. os.Getwd would
+// PhysicalWd is the current folder with symlinks resolved. os.Getwd would
 // return $PWD when it names the same folder, and Claude Code names a project
 // after the real path (reap:129).
-func physicalWd() (string, error) {
+func PhysicalWd() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return "", err

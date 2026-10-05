@@ -48,7 +48,7 @@ func cmdRm(env Env, agents chat.Agents, args []string) int {
 	if orphans {
 		dirs := []string{dir}
 		if every {
-			dirs = projectDirs(env.Homes)
+			dirs = chat.ProjectDirs(env.Homes)
 		}
 		for _, d := range dirs {
 			for _, p := range orphanDirs(d) {
@@ -206,21 +206,6 @@ func removeFolder(path string) {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink == 0 {
 		os.RemoveAll(path)
 	}
-}
-
-// projectDirs are the project folders of the Claude home, by name, leaving out
-// links that point outside it (reap:1823).
-func projectDirs(h chat.Homes) []string {
-	root := filepath.Join(h.Claude, "projects")
-	entries, _ := os.ReadDir(root)
-	var dirs []string
-	for _, e := range entries {
-		d := filepath.Join(root, e.Name())
-		if !strings.HasPrefix(e.Name(), ".") && chat.UnderProj(h, d) {
-			dirs = append(dirs, d)
-		}
-	}
-	return dirs
 }
 
 // orphanDirs are the folders in a project that have no transcript of the same
