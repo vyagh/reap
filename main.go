@@ -2,7 +2,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"os/user"
 	"time"
 
 	"github.com/vyagh/reap/internal/chat"
@@ -13,7 +15,11 @@ import (
 )
 
 func main() {
-	home, _ := os.UserHomeDir()
+	home := homeDir()
+	if home == "" {
+		fmt.Fprintln(os.Stderr, "reap: cannot find your home folder")
+		os.Exit(1)
+	}
 	h := chat.NewHomes(os.Getenv, home)
 	fi, _ := os.Stdout.Stat()
 	os.Exit(cli.Run(os.Args[1:], cli.Env{
@@ -30,4 +36,16 @@ func main() {
 		Terminal: fi != nil && fi.Mode()&os.ModeCharDevice != 0,
 		Screen:   tui.Run,
 	}))
+}
+
+// homeDir is the user's home folder: $HOME, else the entry in the system's user
+// list, as expanduser finds it in 0.5.0. "" when neither knows.
+func homeDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	if u, err := user.Current(); err == nil {
+		return u.HomeDir
+	}
+	return ""
 }
