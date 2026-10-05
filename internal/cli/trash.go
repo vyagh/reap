@@ -59,6 +59,7 @@ func cmdRestore(env Env, agents chat.Agents, args []string) int {
 		}
 		return 0
 	}
+	failed := false
 	for _, tok := range ids {
 		hits := trashed(entries, tok)
 		if len(hits) == 0 {
@@ -73,11 +74,19 @@ func cmdRestore(env Env, agents chat.Agents, args []string) int {
 			fmt.Fprintf(env.Stdout, "!! '%s' is ambiguous: %s\n", tok, pyList(shorts))
 			continue
 		}
-		label := "(failed)"
-		if fresh, err := chat.ReadEntry(hits[0].Dir); err == nil && restore(agents, fresh) {
-			label = fresh.Record.Label
+		fresh, err := chat.ReadEntry(hits[0].Dir)
+		if err == nil {
+			err = restore(agents, fresh)
 		}
-		fmt.Fprintf(env.Stdout, "restored %.8s  %s\n", hits[0].Record.UUID, label)
+		if err != nil {
+			fmt.Fprintf(env.Stdout, "!! %.8s: %v\n", hits[0].Record.UUID, err)
+			failed = true
+			continue
+		}
+		fmt.Fprintf(env.Stdout, "restored %.8s  %s\n", hits[0].Record.UUID, fresh.Record.Label)
+	}
+	if failed {
+		return 1
 	}
 	return 0
 }
@@ -101,9 +110,12 @@ func trashed(entries []chat.Entry, tok string) []chat.Entry {
 	return hits
 }
 
-// restore reports whether the entry came back. The entry is read again just
-// before, so one an earlier restore in the same command removed counts as failed.
-func restore(agents chat.Agents, e chat.Entry) bool {
+// restore puts the entry back through its agent. The entry is read again just
+// before, so one an earlier restore in the same command removed is an error.
+func restore(agents chat.Agents, e chat.Entry) error {
 	a := agents.For(chat.Source(e.Record.Src))
-	return a != nil && a.Restore(e) == nil
+	if a == nil {
+		return fmt.Errorf("no agent for a %q chat", e.Record.Src)
+	}
+	return a.Restore(e)
 }
