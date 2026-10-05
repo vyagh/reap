@@ -103,8 +103,8 @@ func selftestTrash(env Env) error {
 	h := env.Homes
 	h.Trash, h.CodexTrash = scratch, ""
 	proj := func(cwd string) string { return filepath.Join(h.Claude, "projects", chat.DirnameFor(cwd)) }
-	app := h.Home + "/app"
-	deepCwd := h.Home + "/work/deep-app"
+	app := filepath.Join(h.Home, "app")
+	deepCwd := filepath.Join(h.Home, "work", "deep-app")
 	old := chat.Record{UUID: "0a", Dir: proj(app), Label: "old", At: 1, Moved: [][]string{{"/gone/0a.jsonl", "0a.jsonl"}}}
 	newer := old
 	newer.UUID, newer.Label, newer.Proj, newer.Cwd = "0b", "new", "app", &app
