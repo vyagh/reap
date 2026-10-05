@@ -13,7 +13,7 @@ import (
 	"github.com/vyagh/reap/internal/chat"
 )
 
-const Version = "0.5.0"
+const Version = "0.6.0"
 
 const allGone = "--all is gone: plain reap shows every project"
 
